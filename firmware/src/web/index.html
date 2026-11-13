@@ -5,24 +5,33 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>a2drive</title>
 <style>
-:root{--bg:#f6f6f3;--fg:#1d1d1f;--mut:#6e6e73;--card:#fff;--line:#e2e2de;--acc:#2a62d8;--ok:#1a7f37;--bad:#c62828}
-@media (prefers-color-scheme:dark){:root{--bg:#161617;--fg:#f2f2f2;--mut:#9a9aa0;--card:#1f1f21;--line:#333336;--acc:#5b8cff;--ok:#3fb950;--bad:#ff6b6b}}
+:root{--bg:#f6f6f3;--fg:#1d1d1f;--mut:#6e6e73;--card:#fff;--line:#e2e2de;--sel:#eef2fb;--acc:#1d1d1f;--ok:#1a7f37;--bad:#c62828}
+@media (prefers-color-scheme:dark){:root{--bg:#161617;--fg:#f2f2f2;--mut:#9a9aa0;--card:#1f1f21;--line:#333336;--sel:#2a2f3a;--acc:#f2f2f2;--ok:#3fb950;--bad:#ff6b6b}}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:24px 16px}
 main{max-width:640px;margin:0 auto}
 h1{font-size:20px;margin:0 0 16px}
 h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 10px;font-weight:600}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
-dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:0}
-dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
-.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px}
-button,.btn{font:inherit;padding:6px 14px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none}
-button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
-button:disabled{opacity:.45;cursor:default}
+#list{outline:none}
+.row{display:grid;grid-template-columns:22px 1fr 52px 80px 22px 22px;align-items:center;gap:8px;
+     padding:1px 8px;line-height:1.5;border-radius:4px;cursor:pointer;font-weight:600;user-select:none}
+.row.sel{background:var(--sel)}
+.row .arrow{visibility:hidden}.row.sel .arrow{visibility:visible}
+.row .num{text-align:right;font-variant-numeric:tabular-nums}
+.row.empty .name{color:var(--mut);font-weight:400}
+.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#detail{color:var(--mut);font-size:13px;margin:10px 8px 0;min-height:1.4em;overflow-wrap:anywhere}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.buttons{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+button{font:inherit;font-weight:600;padding:8px 18px;border-radius:9px;border:1px solid var(--acc);
+       background:var(--acc);color:var(--bg);cursor:pointer}
+button:disabled{opacity:.35;cursor:default}
 progress{width:100%;margin-top:12px}
 #msg{margin-top:10px;min-height:1.4em;overflow-wrap:anywhere}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:0}
+dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -30,13 +39,16 @@ progress{width:100%;margin-top:12px}
 <h1>a2drive &mdash; WiFi Disk II</h1>
 
 <section>
-<h2>Disk image</h2>
-<dl id="img"><dt>Image</dt><dd>&hellip;</dd></dl>
-<div class="row"><a class="btn" id="dl" href="/image" download hidden>Download</a></div>
-<div class="row">
-<input type="file" id="file" accept=".dsk,.do,.woz">
-<button class="primary" id="up" disabled>Upload</button>
+<div id="list" tabindex="0" aria-label="Disk images"></div>
+<div id="detail"></div>
+<div class="buttons">
+  <button id="download">Download</button>
+  <button id="upload">Upload</button>
+  <button id="delete">Delete</button>
+  <button id="protect">Write protect</button>
+  <button id="mount">Mount</button>
 </div>
+<input type="file" id="file" accept=".dsk,.do,.woz" hidden>
 <progress id="prog" max="1" value="0" hidden></progress>
 <div id="msg"></div>
 </section>
@@ -49,99 +61,146 @@ progress{width:100%;margin-top:12px}
 </main>
 
 <script>
-const DSK = 143360, MAX = 262144, $ = id => document.getElementById(id);
-const FORMATS = {dsk: 'DSK (DOS 3.3 order)', woz1: 'WOZ 1', woz2: 'WOZ 2'};
-let busy = false;
+const DSK = 143360, MAX = 262144, ROWS = 10, $ = id => document.getElementById(id);
+let rows = Array(ROWS).fill(null), mounted = 0, sel = 0, busy = false;
 
-function rows(el, pairs) {
-  el.replaceChildren();
-  for (const [k, v, cls] of pairs) {
-    const dt = document.createElement('dt'), dd = document.createElement('dd');
-    dt.textContent = k; dd.textContent = v;
-    if (cls) dd.className = cls;
-    el.append(dt, dd);
-  }
-}
-const when = t => t ? new Date(t * 1000).toLocaleString() : 'unknown (clock not set)';
-function dur(s) {
-  const d = Math.floor(s / 86400), h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60;
-  return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm ' + (s % 60) + 's';
-}
+const label = r => r.name.replace(/\.(dsk|do|woz)$/i, '');
+const type = r => r.format === 'dsk' ? 'DSK' : 'WOZ';
+const typeLong = {dsk: 'DSK', woz1: 'WOZ 1', woz2: 'WOZ 2'};
+const when = t => t ? new Date(t * 1000).toLocaleString() : 'upload time unknown';
 function msg(t, cls) { $('msg').textContent = t; $('msg').className = cls || ''; }
 
-async function tick() {
+function el(tag, text, cls) {
+  const d = document.createElement(tag);
+  d.textContent = text;
+  if (cls) d.className = cls;
+  return d;
+}
+
+function render() {
+  const list = $('list');
+  list.replaceChildren();
+  rows.forEach((r, i) => {
+    const row = el('div', '', 'row' + (i === sel ? ' sel' : '') + (r ? '' : ' empty'));
+    row.append(
+      el('div', '▶', 'arrow'),
+      el('div', r ? label(r) : '<empty>', 'name'),
+      el('div', r ? type(r) : ''),
+      el('div', r ? String(r.size) : '', 'num'),
+      el('div', i + 1 === mounted ? 'M' : ''),
+      el('div', r && r.writable ? 'W' : ''));
+    row.onclick = () => { sel = i; render(); list.focus(); };
+    row.ondblclick = () => { sel = i; mount(); };
+    list.append(row);
+  });
+
+  const r = rows[sel], d = $('detail');
+  d.replaceChildren();
+  if (r)
+    d.append(`${r.name} · ${typeLong[r.format] || r.format} · ${when(r.uploaded)} · flash check `,
+             el('span', r.verified ? 'OK' : 'MISMATCH', r.verified ? 'ok' : 'bad'),
+             ' · SHA-256 ', el('span', r.sha256, 'mono'));
+
+  // Every button acts only on the selected row.
+  $('mount').disabled = busy || !r;
+  $('mount').textContent = r && sel + 1 === mounted ? 'Unmount' : 'Mount';
+  $('download').disabled = busy || !r;
+  $('upload').disabled = busy;
+  $('delete').disabled = busy || !r;
+  $('protect').disabled = busy || !r;
+  $('protect').textContent = r && r.writable ? 'Write protect' : 'Write enable';
+}
+
+async function refresh() {
   try {
+    const l = await (await fetch('/images', {cache: 'no-store'})).json();
+    rows = l.rows; mounted = l.mounted;
+    render();
     const s = await (await fetch('/status', {cache: 'no-store'})).json();
-    const im = s.image;
-    if (im) {
-      rows($('img'), [
-        ['Name', im.name],
-        ['Format', FORMATS[im.format] || im.format],
-        ['Size', im.size.toLocaleString() + ' bytes'],
-        ['SHA-256', im.sha256, 'mono'],
-        ['Uploaded', when(im.uploaded)],
-        ['Flash check', im.verified ? 'OK' : 'MISMATCH', im.verified ? 'ok' : 'bad'],
-      ]);
-      $('dl').hidden = false;
-      $('dl').setAttribute('download', im.name);
-    } else {
-      rows($('img'), [['Image', 'none stored']]);
-      $('dl').hidden = true;
-    }
-    rows($('dev'), [
-      ['Hostname', s.hostname + '.local'],
-      ['WiFi', s.ssid],
-      ['IP', s.ip || '—'],
-      ['Signal', s.rssi_dbm == null ? '—' : s.rssi_dbm + ' dBm'],
-      ['Uptime', dur(s.uptime_s)],
-      ['Firmware', s.firmware],
-      ['Board', s.board_id, 'mono'],
-    ]);
+    $('dev').replaceChildren(...[
+      ['Hostname', s.hostname + '.local'], ['WiFi', s.ssid], ['IP', s.ip || '—'],
+      ['Signal', s.rssi_dbm == null ? '—' : s.rssi_dbm + ' dBm'], ['Firmware', s.firmware],
+    ].flatMap(([k, v]) => [el('dt', k), el('dd', v)]));
     $('err').textContent = '';
   } catch (e) {
     $('err').textContent = 'No response from the drive: ' + e.message;
   }
 }
 
-$('file').onchange = () => {
-  const f = $('file').files[0];
-  msg('');
-  if (!f) { $('up').disabled = true; return; }
-  const woz = /\.woz$/i.test(f.name);
-  if (!woz && f.size !== DSK) {
-    msg(`${f.name} is ${f.size.toLocaleString()} bytes; a .dsk image must be exactly ${DSK.toLocaleString()}.`, 'bad');
-    $('up').disabled = true;
-    return;
+async function op(method, url, okText) {
+  busy = true; render();
+  try {
+    const res = await fetch(url, {method});
+    let r = {};
+    try { r = await res.json(); } catch {}
+    if (res.ok && r.ok !== false) msg(okText, 'ok');
+    else msg('Failed: ' + (r.error || 'HTTP ' + res.status), 'bad');
+  } catch (e) {
+    msg('Failed: ' + e.message, 'bad');
   }
-  if (woz && f.size > MAX) {
-    msg(`${f.name} is ${f.size.toLocaleString()} bytes; the drive holds images up to ${MAX.toLocaleString()}.`, 'bad');
-    $('up').disabled = true;
-    return;
-  }
-  $('up').disabled = busy;
-};
-
-function done() {
   busy = false;
-  $('prog').hidden = true;
-  $('up').disabled = !$('file').files[0];
-  tick();
+  await refresh();
 }
 
-$('up').onclick = () => {
+function mount() {
+  const r = rows[sel];
+  if (busy || !r) return;
+  if (sel + 1 === mounted)
+    op('POST', '/eject', `Unmounted ${label(r)}; the drive is empty.`);
+  else
+    op('POST', `/mount/${sel + 1}`, `Mounted ${label(r)}.`);
+}
+
+$('mount').onclick = mount;
+
+$('protect').onclick = () => {
+  const r = rows[sel];
+  if (!r || busy) return;
+  const on = r.writable ? 0 : 1;
+  op('POST', `/writable/${sel + 1}?on=${on}`,
+     on ? `${label(r)} is writable (W).` : `${label(r)} is write-protected.`);
+};
+
+$('download').onclick = () => {
+  const r = rows[sel];
+  if (!r) return;
+  const a = Object.assign(document.createElement('a'), {href: `/image/${sel + 1}`, download: r.name});
+  document.body.append(a); a.click(); a.remove();
+};
+
+$('delete').onclick = () => {
+  const r = rows[sel];
+  if (!r || busy) return;
+  if (!confirm(`Delete ${label(r)}?` + (sel + 1 === mounted ? ' It is mounted; the drive will be empty.' : '')))
+    return;
+  op('DELETE', `/image/${sel + 1}`, `Deleted ${label(r)}.`);
+};
+
+$('upload').onclick = () => { if (!busy) { $('file').value = ''; $('file').click(); } };
+
+$('file').onchange = () => {
   const f = $('file').files[0];
   if (!f) return;
-  busy = true; $('up').disabled = true;
+  const woz = /\.woz$/i.test(f.name);
+  if (!woz && f.size !== DSK)
+    return msg(`${f.name} is ${f.size.toLocaleString()} bytes; a .dsk image must be exactly ${DSK.toLocaleString()}.`, 'bad');
+  if (f.size > MAX)
+    return msg(`${f.name} is ${f.size.toLocaleString()} bytes; the drive holds images up to ${MAX.toLocaleString()}.`, 'bad');
+  const r = rows[sel], row = sel + 1;
+  if (r && !confirm(`Replace ${label(r)} with ${f.name}?`)) return;
+
+  busy = true; render();
   const x = new XMLHttpRequest();
-  x.open('PUT', '/image?name=' + encodeURIComponent(f.name));
+  x.open('PUT', `/image/${row}?name=` + encodeURIComponent(f.name));
   $('prog').hidden = false; $('prog').value = 0;
-  msg('Uploading…');
+  msg(`Uploading ${f.name}…`);
   x.upload.onprogress = e => { if (e.lengthComputable) $('prog').value = e.loaded / e.total; };
-  x.upload.onload = () => msg('Writing to flash…');
+  x.upload.onload = () => msg('Checking and saving…');
+  const done = () => { busy = false; $('prog').hidden = true; refresh(); };
   x.onload = () => {
     let r = {};
     try { r = JSON.parse(x.responseText); } catch {}
-    if (x.status === 200 && r.ok) msg(`Stored ${r.name} — SHA-256 ${r.sha256}`, 'ok');
+    if (x.status === 200 && r.ok) msg(`Stored ${r.name} in row ${r.row}.`, 'ok');
     else msg('Upload failed: ' + (r.error || x.responseText || 'HTTP ' + x.status), 'bad');
     done();
   };
@@ -149,8 +208,14 @@ $('up').onclick = () => {
   x.send(f);
 };
 
-tick();
-setInterval(tick, 3000);
+$('list').onkeydown = e => {
+  if (e.key === 'ArrowDown') { sel = Math.min(ROWS - 1, sel + 1); render(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); render(); e.preventDefault(); }
+  else if (e.key === 'Enter') { mount(); e.preventDefault(); }
+};
+
+refresh().then(() => { if (mounted) { sel = mounted - 1; render(); } $('list').focus(); });
+setInterval(() => { if (!busy) refresh(); }, 3000);
 </script>
 </body>
 </html>

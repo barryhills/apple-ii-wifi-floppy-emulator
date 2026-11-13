@@ -1,4 +1,19 @@
-// HTTP routes and the upload flow.
+// HTTP routes, uploads, and directory operations.
+//
+// Rows are 1..10 in URLs, 0..9 in the store.
+//   GET    /images        the whole list (JSON)
+//   GET    /image/N       download row N (original file)
+//   PUT    /image/N       upload into row N (?name=file), replacing it
+//   DELETE /image/N       clear row N
+//   POST   /mount/N       mount row N (refused if the row is empty)
+//   POST   /eject         unmount: the drive becomes empty
+//   POST   /writable/N?on=1|0   set or clear row N's "W" (writable) tag
+//   GET    /image         download the mounted image
+//   GET    /image.woz     test only: mounted .dsk GCR-encoded as WOZ 2
+//
+// Mount and delete write the flash directory, so like uploads they run in
+// the main loop (api_poll) and answer when done. One operation at a time;
+// others get 409.
 //
 // Upload (PUT /image): the body streams through a RAM ring. lwIP callbacks
 // put bytes in (upload_sink); api_poll() in the main loop takes them out and
@@ -45,6 +60,13 @@ static absolute_time_t up_started;
 static uint8_t    ring[RING_SIZE];
 static uint32_t   ring_head, ring_tail; // free-running byte counters
 static uint8_t    readers[STORE_SLOTS_MAX];    // downloads per image space
+static int        up_row;
+
+typedef enum { OP_NONE, OP_MOUNT, OP_DELETE, OP_WRITABLE } op_t;
+static op_t       op;
+static int        op_row;
+static bool       op_on;
+static conn_t    *op_conn;
 
 // Printable ASCII only; no quote, backslash or slash (it goes into a
 // Content-Disposition header and JSON).
@@ -93,11 +115,26 @@ static void download_closed(conn_t *c)
         readers[slot]--;
 }
 
-static void get_image(conn_t *c)
+// "/image/7" -> 6; -1 if not a row number 1..STORE_ROWS.
+static int parse_row(const char *s)
+{
+    if (!*s || strlen(s) > 2)
+        return -1;
+    int n = 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9')
+            return -1;
+        n = n * 10 + (*s - '0');
+    }
+    return n >= 1 && n <= STORE_ROWS ? n - 1 : -1;
+}
+
+static void get_image(conn_t *c, int row)
 {
     image_info_t im;
-    if (!store_image(&im)) {
-        http_respond_text(c, 404, "no image stored\n");
+    if (!store_row(row, &im)) {
+        http_respond_text(c, 404, row == store_mounted() || row < 0 ?
+                          "no image mounted\n" : "that row is empty\n");
         return;
     }
     char name[IMAGE_NAME_MAX], hex[65], extra[256];
@@ -250,9 +287,9 @@ static void upload_closed(conn_t *c)
         up_state = UP_ABORTED;
 }
 
-static void put_image(conn_t *c)
+static void put_image(conn_t *c, int row)
 {
-    if (up_state != UP_IDLE) {
+    if (up_state != UP_IDLE || op != OP_NONE) {
         http_respond_text(c, 409, "another upload is in progress\n");
         return;
     }
@@ -283,6 +320,7 @@ static void put_image(conn_t *c)
         return;
     }
     ring_head = ring_tail = 0;
+    up_row = row;
     up_size = (uint32_t)cl;
     up_state = UP_RECEIVING;
     up_conn = c;
@@ -291,39 +329,163 @@ static void put_image(conn_t *c)
     http_stream_body(c, (size_t)cl, upload_sink, upload_complete);
 }
 
+// ---------------------------------------------------------------- list
+
+static void get_images(conn_t *c)
+{
+    static char body[STORE_ROWS * 400 + 64];
+    size_t o = 0;
+    o += (size_t)snprintf(body + o, sizeof body - o, "{\"mounted\":%d,\"busy\":%s,\"rows\":[",
+                          store_mounted() + 1,
+                          (up_state != UP_IDLE || op != OP_NONE) ? "true" : "false");
+    for (int r = 0; r < STORE_ROWS; r++) {
+        image_info_t im;
+        const char *sep = r ? "," : "";
+        if (!store_row(r, &im)) {
+            o += (size_t)snprintf(body + o, sizeof body - o, "%snull", sep);
+            continue;
+        }
+        char name[IMAGE_NAME_MAX * 6], hex[65], up[24] = "null";
+        json_escape(name, sizeof name, im.name);
+        sha256_hex(im.sha256, hex);
+        if (im.uploaded)
+            snprintf(up, sizeof up, "%lld", (long long)im.uploaded);
+        o += (size_t)snprintf(body + o, sizeof body - o,
+            "%s{\"name\":\"%s\",\"format\":\"%s\",\"size\":%lu,\"sha256\":\"%s\","
+            "\"uploaded\":%s,\"verified\":%s,\"writable\":%s}",
+            sep, name, store_format_name(im.format), (unsigned long)im.size, hex, up,
+            im.verified ? "true" : "false", (im.flags & IMG_FLAG_WRITABLE) ? "true" : "false");
+        if (o >= sizeof body)
+            break;
+    }
+    if (o < sizeof body)
+        o += (size_t)snprintf(body + o, sizeof body - o, "]}\n");
+    if (o >= sizeof body) {
+        http_respond_text(c, 500, "list too large\n");
+        return;
+    }
+    http_respond(c, 200, "application/json", body, o, true, NULL);
+}
+
+// ---------------------------------------------------------------- mount / delete
+
+static void op_closed(conn_t *c)
+{
+    if (op_conn == c)
+        op_conn = NULL;         // the operation still completes
+}
+
+static void start_op(conn_t *c, op_t what, int row)
+{
+    if (up_state != UP_IDLE || op != OP_NONE) {
+        http_respond_text(c, 409, "busy; try again\n");
+        return;
+    }
+    op = what;
+    op_row = row;
+    op_conn = c;
+    http_set_on_close(c, op_closed);
+    http_hold(c);
+}
+
+static void run_op(void)
+{
+    char err[96];
+    int rc = op == OP_MOUNT  ? store_mount(op_row, err, sizeof err) :
+             op == OP_DELETE ? store_delete(op_row, err, sizeof err) :
+                               store_set_writable(op_row, op_on, err, sizeof err);
+    static char e[sizeof err * 6], body[sizeof e + 64];
+    int code = 200;
+    if (rc == 0) {
+        snprintf(body, sizeof body, "{\"ok\":true,\"mounted\":%d}\n", store_mounted() + 1);
+    } else {
+        json_escape(e, sizeof e, err);
+        snprintf(body, sizeof body, "{\"ok\":false,\"error\":\"%s\"}\n", e);
+        code = strcmp(err, "that row is empty") == 0 ? 409 : 500;
+    }
+    cyw43_arch_lwip_begin();
+    if (op_conn) {
+        conn_t *c = op_conn;
+        op_conn = NULL;
+        http_respond_deferred(c, code, "application/json", body, strlen(body));
+    }
+    op = OP_NONE;
+    cyw43_arch_lwip_end();
+}
+
 // ---------------------------------------------------------------- routing
+
+static void method_not_allowed(conn_t *c, const char *allow)
+{
+    char h[48];
+    snprintf(h, sizeof h, "Allow: %s\r\n", allow);
+    http_respond(c, 405, "text/plain", "method not allowed\n", 19, false, h);  // h is copied
+}
 
 static void handle(conn_t *c)
 {
     const char *m = http_method(c), *p = http_path(c);
     bool get = strcmp(m, "GET") == 0;
     bool put = strcmp(m, "PUT") == 0;
+    bool del = strcmp(m, "DELETE") == 0;
+    bool post = strcmp(m, "POST") == 0;
 
     if (strcmp(p, "/") == 0 || strcmp(p, "/index.html") == 0) {
         if (!get)
-            http_respond(c, 405, "text/plain", "GET only\n", 9, false, "Allow: GET\r\n");
-        else
-            http_respond(c, 200, "text/html; charset=utf-8", index_html, index_html_len, false, NULL);
+            return method_not_allowed(c, "GET");
+        http_respond(c, 200, "text/html; charset=utf-8", index_html, index_html_len, false, NULL);
     } else if (strcmp(p, "/status") == 0) {
-        if (!get) {
-            http_respond(c, 405, "text/plain", "GET only\n", 9, false, "Allow: GET\r\n");
-        } else {
-            static char body[STATUS_JSON_MAX];     // lwIP context is serialized
-            size_t n = status_json(body, sizeof body);
-            http_respond(c, 200, "application/json", body, n, true, NULL);
-        }
-    } else if (strcmp(p, "/image") == 0) {
+        if (!get)
+            return method_not_allowed(c, "GET");
+        static char body[STATUS_JSON_MAX];     // lwIP context is serialized
+        size_t n = status_json(body, sizeof body);
+        http_respond(c, 200, "application/json", body, n, true, NULL);
+    } else if (strcmp(p, "/images") == 0) {
+        if (!get)
+            return method_not_allowed(c, "GET");
+        get_images(c);
+    } else if (strncmp(p, "/image/", 7) == 0) {
+        int row = parse_row(p + 7);
+        if (row < 0)
+            return http_respond_text(c, 404, "rows are 1 to 10\n");
         if (get)
-            get_image(c);
+            get_image(c, row);
         else if (put)
-            put_image(c);
+            put_image(c, row);
+        else if (del)
+            start_op(c, OP_DELETE, row);
         else
-            http_respond(c, 405, "text/plain", "GET or PUT\n", 11, false, "Allow: GET, PUT\r\n");
+            method_not_allowed(c, "GET, PUT, DELETE");
+    } else if (strncmp(p, "/mount/", 7) == 0) {
+        int row = parse_row(p + 7);
+        if (row < 0)
+            return http_respond_text(c, 404, "rows are 1 to 10\n");
+        if (!post)
+            return method_not_allowed(c, "POST");
+        start_op(c, OP_MOUNT, row);
+    } else if (strcmp(p, "/eject") == 0) {
+        if (!post)
+            return method_not_allowed(c, "POST");
+        start_op(c, OP_MOUNT, -1);
+    } else if (strncmp(p, "/writable/", 10) == 0) {
+        int row = parse_row(p + 10);
+        char on[4];
+        if (row < 0)
+            return http_respond_text(c, 404, "rows are 1 to 10\n");
+        if (!post)
+            return method_not_allowed(c, "POST");
+        if (!http_query_param(c, "on", on, sizeof on) || (strcmp(on, "0") && strcmp(on, "1")))
+            return http_respond_text(c, 400, "need ?on=1 or ?on=0\n");
+        op_on = on[0] == '1';
+        start_op(c, OP_WRITABLE, row);
+    } else if (strcmp(p, "/image") == 0) {
+        if (!get)
+            return method_not_allowed(c, "GET");
+        get_image(c, store_mounted());
     } else if (strcmp(p, "/image.woz") == 0) {
-        if (get)
-            get_image_woz(c);
-        else
-            http_respond(c, 405, "text/plain", "GET only\n", 9, false, "Allow: GET\r\n");
+        if (!get)
+            return method_not_allowed(c, "GET");
+        get_image_woz(c);
     } else {
         http_respond_text(c, 404, "not found\n");
     }
@@ -338,20 +500,20 @@ static void finish_upload(void)
 {
     int64_t ms = absolute_time_diff_us(up_started, get_absolute_time()) / 1000;
     char err[128];
-    int rc = store_write_finish(up_name, clock_unix(), err, sizeof err);
+    int rc = store_write_finish(up_row, up_name, clock_unix(), err, sizeof err);
 
     static char e[sizeof err * 6];                      // static: large for the
     static char body[sizeof e + IMAGE_NAME_MAX * 6 + 200];  // shared IRQ stack
     int code;
     if (rc == 0) {
         image_info_t im;
-        store_image(&im);
+        store_row(up_row, &im);
         char name[IMAGE_NAME_MAX * 6], hex[65];
         json_escape(name, sizeof name, im.name);
         sha256_hex(im.sha256, hex);
         snprintf(body, sizeof body,
-                 "{\"ok\":true,\"name\":\"%s\",\"format\":\"%s\",\"size\":%lu,\"sha256\":\"%s\"}\n",
-                 name, store_format_name(im.format), (unsigned long)im.size, hex);
+                 "{\"ok\":true,\"row\":%d,\"name\":\"%s\",\"format\":\"%s\",\"size\":%lu,\"sha256\":\"%s\"}\n",
+                 up_row + 1, name, store_format_name(im.format), (unsigned long)im.size, hex);
         code = 200;
         printf("upload: %lu bytes stored in %lld ms\n", (unsigned long)up_size, (long long)ms);
     } else {
@@ -375,6 +537,10 @@ bool api_poll(void)
 {
     static uint8_t chunk[4096];
 
+    if (op != OP_NONE) {
+        run_op();
+        return true;
+    }
     if (up_state == UP_IDLE)
         return false;
 

@@ -78,7 +78,16 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   (`/image.woz` kept as a hidden test endpoint for .dsk only). Uploads now
   stream straight to a free flash image space (16 KB RAM ring, TCP ack
   deferred until written; ~2 s per WOZ); the 140 KB upload RAM buffer is
-  gone (RAM in use 114 KB). Next: PIO player (milestones 4-5).
+  gone (RAM in use 114 KB).
+- **Image list GUI passed** 2026-11-13 (Barry). v0.5-list, branch
+  `m3c-image-list`. Details: 10 fixed rows (Barry's design: name without extension, DSK/WOZ,
+  bytes, M and W text tags, arrow cursor; buttons Mount/Download/Upload/
+  Delete/Write/Mount, last two side by side; arrow keys + Enter; detail line for the selected row). Directory
+  v2 (10 rows + mounted row; v1 migrates in place). Mount of an empty row =
+  refused; eject is its own request. GUI rule: every button acts only on
+  the selected row (Mount/Unmount, Write enable/protect). Mount/delete run in
+  the main loop like uploads. Sticky mount across
+  power cycles. Next: PIO player (milestones 4-5).
 - **Unexplained hang (2026-11-13):** v0.2-m2 froze while idle (no USB serial,
   no picotool reset, no network) after Barry's M2 tests; cured by replug.
   Cause unknown. Since v0.3-m3 the LED is a heartbeat (5 Hz connecting, 1 Hz
@@ -221,14 +230,21 @@ field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
 - HTTP server is our own on lwIP raw TCP (`src/http.c`), not lwIP httpd, which
   can't do PUT/DELETE.
 
-### HTTP API (as built, v0.2-m2)
+### HTTP API (as built, v0.5-list; rows are 1-10)
 
 | Request | Purpose |
 |---|---|
-| `GET /` | configurator page (`src/web/index.html`, embedded at build) |
-| `GET /status` | JSON: firmware, board, hostname, SSID, IP, RSSI, uptime, time, image {name, size, sha256, uploaded, verified} |
-| `PUT /image?name=X` | upload; body must be exactly 143,360 bytes; reply after the flash write+verify |
-| `GET /image` | download; `Content-Disposition` filename, `X-Image-SHA256` header |
+| `GET /` | the page (`src/web/index.html`, embedded at build) |
+| `GET /images` | JSON list: mounted row, busy, 10 rows (name, format, size, sha256, uploaded, verified, writable) or null |
+| `PUT /image/N?name=X` | upload .dsk (143,360 bytes) or .woz (up to 256 KB) into row N, replacing it |
+| `GET /image/N` | download row N as uploaded |
+| `DELETE /image/N` | clear row N (if mounted, the drive becomes empty) |
+| `POST /mount/N` | mount row N (an empty row is refused, 409) |
+| `POST /eject` | unmount: drive empty |
+| `POST /writable/N?on=1\|0` | set/clear row N's W tag (stored; honoured from milestone 6) |
+| `GET /image` | download the mounted image |
+| `GET /status` | device JSON incl. mounted_row and mounted image |
+| `GET /image.woz` | test only: mounted .dsk encoded to WOZ 2 |
 
 Later: `PUT /config`, and a list of images once the multi-image design is
 decided. **GUI vocabulary (decided 2026-11-13):** the image the drive serves

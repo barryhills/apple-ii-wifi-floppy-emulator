@@ -42,6 +42,10 @@ typedef void (*http_sink_fn)(conn_t *c, const uint8_t *data, size_t n);
 void http_stream_body(conn_t *c, size_t len, http_sink_fn sink, http_conn_fn done);
 void http_body_consumed(conn_t *c, size_t n);   // lwIP lock held
 
+// Answer later: the handler neither responds nor wants a body; the main
+// loop does the work and answers with http_respond_deferred().
+void http_hold(conn_t *c);
+
 // Answer a held connection from outside its callbacks (lwIP lock held).
 // Copies the body. c must not be used afterwards.
 void http_respond_deferred(conn_t *c, int code, const char *ctype,

@@ -52,9 +52,9 @@ size_t status_json(char *buf, size_t n)
     int len = snprintf(buf, n,
         "{\"firmware\":\"%s\",\"board_id\":\"%s\",\"hostname\":\"%s\","
         "\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi_dbm\":%s,\"uptime_s\":%llu,"
-        "\"time\":%s,\"image\":%s,\"halftrack\":null,\"write_protect\":true}\n",
+        "\"time\":%s,\"mounted_row\":%d,\"image\":%s,\"halftrack\":null,\"write_protect\":true}\n",
         A2DRIVE_VERSION, id, net_hostname(), ssid, net_ip_str(), rssi,
-        (unsigned long long)(time_us_64() / 1000000), now, image);
+        (unsigned long long)(time_us_64() / 1000000), now, store_mounted() + 1, image);
     if (len < 0)
         len = 0;
     if ((size_t)len >= n)

@@ -20,14 +20,17 @@
 #define SLOT_BASE       (STORE_OFFSET + 0x10000u)
 #define SLOT_SIZE       IMAGE_MAX_SIZE
 #define SLOT_COUNT      ((PICO_FLASH_SIZE_BYTES - SLOT_BASE) / SLOT_SIZE)
-#define DIR_MAX         8
 #define DIR_MAGIC       0x56443241u     // "A2DV"
-#define DIR_VERSION     1
+#define DIR_VERSION     2               // v1: 8 entries, one image (v0.2-0.4)
+#define DIR_V1_MAX      8
 
+// Same 112-byte layout in v1 and v2 (v1's uint16 format == v2's format +
+// flags=0 on little-endian), so v1 entries copy across unchanged.
 typedef struct {
     uint8_t  used;
     uint8_t  slot;
-    uint16_t format;
+    uint8_t  format;
+    uint8_t  flags;
     uint32_t size;
     int64_t  uploaded;
     uint8_t  sha256[32];
@@ -39,18 +42,28 @@ typedef struct {
     uint16_t    version;
     uint16_t    entry_size;
     uint32_t    seq;
-    int32_t     current;                // entry index, -1 = none
-    dir_entry_t e[DIR_MAX];
+    int32_t     current;                // mounted row, -1 = none
+    dir_entry_t e[STORE_ROWS];
     uint32_t    crc;                    // CRC32 of all bytes before it
 } dir_t;
 
+typedef struct {                        // v1, read only for migration
+    uint32_t    magic;
+    uint16_t    version;
+    uint16_t    entry_size;
+    uint32_t    seq;
+    int32_t     current;
+    dir_entry_t e[DIR_V1_MAX];
+    uint32_t    crc;
+} dir_v1_t;
+
 static_assert(sizeof(dir_t) <= FLASH_SECTOR_SIZE, "directory must fit a sector");
-static_assert(SLOT_COUNT >= 2, "need at least two image spaces");
+static_assert(SLOT_COUNT >= STORE_ROWS + 1, "need a spare image space");
 static_assert(SLOT_COUNT <= STORE_SLOTS_MAX, "avoid masks are 32 bits");
 
 static dir_t cur;               // live directory; swapped under the lwIP lock
 static int   cur_sector = -1;   // 0/1 = which copy holds cur, -1 = none valid
-static bool  cur_verified;
+static bool  verified[STORE_ROWS];
 static uint8_t secbuf[FLASH_SECTOR_SIZE] __attribute__((aligned(4)));
 
 // In-progress streaming write.
@@ -161,6 +174,14 @@ static bool dir_valid(const dir_t *d)
            d->crc == crc32(d, offsetof(dir_t, crc));
 }
 
+static bool dir_v1_valid(const void *p)
+{
+    const dir_v1_t *d = p;
+    return d->magic == DIR_MAGIC && d->version == 1 &&
+           d->entry_size == sizeof(dir_entry_t) &&
+           d->crc == crc32(d, offsetof(dir_v1_t, crc));
+}
+
 static bool entry_sane(const dir_entry_t *e)
 {
     return e->used && e->slot < SLOT_COUNT && e->size > 0 &&
@@ -180,13 +201,41 @@ const char *store_format_name(image_format_t f)
 
 static bool slot_in_use(const dir_t *d, unsigned slot)
 {
-    for (int i = 0; i < DIR_MAX; i++)
+    for (int i = 0; i < STORE_ROWS; i++)
         if (d->e[i].used && d->e[i].slot == slot)
             return true;
     return false;
 }
 
-// ---------------------------------------------------------------- public
+// Write nd as the new directory into the copy that is not live, read it
+// back, then make it live.
+static int dir_commit(dir_t *nd, char *err, size_t errn)
+{
+    nd->magic = DIR_MAGIC;
+    nd->version = DIR_VERSION;
+    nd->entry_size = sizeof(dir_entry_t);
+    nd->seq = cur.seq + 1;
+    nd->crc = crc32(nd, offsetof(dir_t, crc));
+
+    int ns = cur_sector == 0 ? 1 : 0;
+    memset(secbuf, 0xFF, sizeof secbuf);
+    memcpy(secbuf, nd, sizeof *nd);
+    size_t plen = (sizeof *nd + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1);
+    if (!flash_erase(DIR_OFFSET(ns), FLASH_SECTOR_SIZE) ||
+        !flash_program(DIR_OFFSET(ns), secbuf, plen)) {
+        snprintf(err, errn, "directory write failed");
+        return -1;
+    }
+    if (!dir_valid(dir_in_flash(ns)) || memcmp(dir_in_flash(ns), nd, sizeof *nd) != 0) {
+        snprintf(err, errn, "directory read-back mismatch");
+        return -1;
+    }
+    cyw43_arch_lwip_begin();
+    cur = *nd;
+    cur_sector = ns;
+    cyw43_arch_lwip_end();
+    return 0;
+}
 
 void store_init(void)
 {
@@ -196,57 +245,88 @@ void store_init(void)
         panic("firmware (%lu bytes) overlaps image storage at 0x%lx",
               (unsigned long)fw_end, (unsigned long)STORE_OFFSET);
 
-    const dir_t *a = dir_in_flash(0), *b = dir_in_flash(1);
-    bool va = dir_valid(a), vb = dir_valid(b);
-    if (va && (!vb || (int32_t)(a->seq - b->seq) > 0)) {
-        cur = *a;
-        cur_sector = 0;
-    } else if (vb) {
-        cur = *b;
-        cur_sector = 1;
-    } else {
-        memset(&cur, 0, sizeof cur);
-        cur.current = -1;
-        cur_sector = -1;
+    // Newest valid copy wins; a v1 directory (single image) is converted in
+    // RAM and written as v2 on the next change.
+    memset(&cur, 0, sizeof cur);
+    cur.current = -1;
+    cur_sector = -1;
+    bool found = false;
+    for (int i = 0; i < 2; i++) {
+        const void *p = (const void *)(XIP_BASE + DIR_OFFSET(i));
+        const dir_t *d2 = p;
+        const dir_v1_t *d1 = p;
+        if (dir_valid(d2)) {
+            if (!found || (int32_t)(d2->seq - cur.seq) > 0) {
+                cur = *d2;
+                cur_sector = i;
+                found = true;
+            }
+        } else if (dir_v1_valid(d1)) {
+            if (!found || (int32_t)(d1->seq - cur.seq) > 0) {
+                memset(&cur, 0, sizeof cur);
+                cur.seq = d1->seq;
+                cur.current = d1->current;
+                memcpy(cur.e, d1->e, sizeof d1->e);
+                cur_sector = i;
+                found = true;
+                printf("store: migrating v1 directory (copy %c)\n", i ? 'B' : 'A');
+            }
+        }
     }
 
-    if (cur.current >= DIR_MAX || (cur.current >= 0 && !entry_sane(&cur.e[cur.current]))) {
-        printf("store: directory entry %ld is bad; ignoring it\n", (long)cur.current);
-        cur.current = -1;
-    }
-
-    printf("store: firmware %lu KB, %u image spaces, directory %s (seq %lu)\n",
-           (unsigned long)(fw_end / 1024), (unsigned)SLOT_COUNT,
-           cur_sector < 0 ? "empty" : cur_sector ? "B" : "A",
-           (unsigned long)cur.seq);
-
-    cur_verified = false;
-    if (cur.current >= 0) {
-        const dir_entry_t *e = &cur.e[cur.current];
+    int rows = 0;
+    for (int r = 0; r < STORE_ROWS; r++) {
+        dir_entry_t *e = &cur.e[r];
+        verified[r] = false;
+        if (!e->used)
+            continue;
+        if (!entry_sane(e)) {
+            printf("store: row %d is bad; ignoring it\n", r + 1);
+            memset(e, 0, sizeof *e);
+            continue;
+        }
         uint8_t h[32];
         sha256_bytes(slot_data(e->slot), e->size, h);
-        cur_verified = memcmp(h, e->sha256, 32) == 0;
-        printf("store: image \"%s\", %lu bytes, flash check %s\n", e->name,
-               (unsigned long)e->size, cur_verified ? "OK" : "MISMATCH");
-    } else {
-        printf("store: no image stored\n");
+        verified[r] = memcmp(h, e->sha256, 32) == 0;
+        rows++;
+        printf("store: row %d \"%s\" %s %lu bytes, flash check %s\n", r + 1, e->name,
+               store_format_name((image_format_t)e->format), (unsigned long)e->size,
+               verified[r] ? "OK" : "MISMATCH");
     }
+    if (cur.current >= STORE_ROWS || (cur.current >= 0 && !cur.e[cur.current].used))
+        cur.current = -1;
+
+    printf("store: firmware %lu KB, %u image spaces, directory %s seq %lu, %d image(s), mounted %d\n",
+           (unsigned long)(fw_end / 1024), (unsigned)SLOT_COUNT,
+           cur_sector < 0 ? "empty" : cur_sector ? "B" : "A",
+           (unsigned long)cur.seq, rows, (int)cur.current + 1);
+}
+
+bool store_row(int row, image_info_t *out)
+{
+    if (row < 0 || row >= STORE_ROWS || !cur.e[row].used)
+        return false;
+    const dir_entry_t *e = &cur.e[row];
+    memcpy(out->name, e->name, IMAGE_NAME_MAX);
+    out->size = e->size;
+    out->format = (image_format_t)e->format;
+    out->flags = e->flags;
+    memcpy(out->sha256, e->sha256, 32);
+    out->uploaded = e->uploaded;
+    out->verified = verified[row];
+    out->slot = e->slot;
+    out->data = slot_data(e->slot);
+    return true;
+}
+
+int store_mounted(void)
+{
+    return (int)cur.current;
 }
 
 bool store_image(image_info_t *out)
 {
-    if (cur.current < 0)
-        return false;
-    const dir_entry_t *e = &cur.e[cur.current];
-    memcpy(out->name, e->name, IMAGE_NAME_MAX);
-    out->size = e->size;
-    out->format = (image_format_t)e->format;
-    out->slot = e->slot;
-    memcpy(out->sha256, e->sha256, 32);
-    out->uploaded = e->uploaded;
-    out->verified = cur_verified;
-    out->data = slot_data(e->slot);
-    return true;
+    return store_row((int)cur.current, out);
 }
 
 int store_write_begin(uint32_t size, uint32_t avoid_mask, char *err, size_t errn)
@@ -255,20 +335,22 @@ int store_write_begin(uint32_t size, uint32_t avoid_mask, char *err, size_t errn
         snprintf(err, errn, "image must be 1 to %u bytes", (unsigned)SLOT_SIZE);
         return -1;
     }
-    // Pick a free image space, rotating to spread flash wear.
-    int cur_slot = cur.current >= 0 ? cur.e[cur.current].slot : -1;
+    // Pick a free image space, rotating from the last one written to spread
+    // flash wear.
+    static int last_slot = -1;
     int slot = -1;
     for (int k = 1; k <= (int)SLOT_COUNT; k++) {
-        int s = (cur_slot + k + (int)SLOT_COUNT) % (int)SLOT_COUNT;
+        int s = (last_slot + k + (int)SLOT_COUNT) % (int)SLOT_COUNT;
         if (!slot_in_use(&cur, (unsigned)s) && !(avoid_mask & (1u << s))) {
             slot = s;
             break;
         }
     }
     if (slot < 0) {
-        snprintf(err, errn, "no free image space");
+        snprintf(err, errn, "no free image space (a download may be in progress; try again)");
         return -1;
     }
+    last_slot = slot;
     memset(&wr, 0, sizeof wr);
     wr.active = true;
     wr.slot = slot;
@@ -323,13 +405,17 @@ void store_write_abort(void)
     wr.active = false;      // the space holds junk but stays free in the directory
 }
 
-int store_write_finish(const char *name, int64_t uploaded, char *err, size_t errn)
+int store_write_finish(int row, const char *name, int64_t uploaded, char *err, size_t errn)
 {
     if (!wr.active) {
         snprintf(err, errn, "no write in progress");
         return -1;
     }
     wr.active = false;
+    if (row < 0 || row >= STORE_ROWS) {
+        snprintf(err, errn, "bad row");
+        return -1;
+    }
     if (wr.written != wr.size) {
         snprintf(err, errn, "short image: %lu of %lu bytes",
                  (unsigned long)wr.written, (unsigned long)wr.size);
@@ -354,47 +440,81 @@ int store_write_finish(const char *name, int64_t uploaded, char *err, size_t err
         return -1;
     }
 
-    dir_t nd;
-    memset(&nd, 0, sizeof nd);
-    nd.magic = DIR_MAGIC;
-    nd.version = DIR_VERSION;
-    nd.entry_size = sizeof(dir_entry_t);
-    nd.seq = cur.seq + 1;
-    nd.current = 0;
-    dir_entry_t *e = &nd.e[0];
+    dir_t nd = cur;
+    dir_entry_t *e = &nd.e[row];
+    memset(e, 0, sizeof *e);
     e->used = 1;
     e->slot = (uint8_t)wr.slot;
-    e->format = (uint16_t)fmt;
+    e->format = (uint8_t)fmt;
     e->size = wr.size;
     e->uploaded = uploaded;
     sha256_bytes(fl, wr.size, e->sha256);           // hash what is actually stored
     strncpy(e->name, name, IMAGE_NAME_MAX - 1);
-    nd.crc = crc32(&nd, offsetof(dir_t, crc));
-
-    int ns = cur_sector == 0 ? 1 : 0;               // never overwrite the live copy
-    memset(secbuf, 0xFF, sizeof secbuf);
-    memcpy(secbuf, &nd, sizeof nd);
-    size_t plen = (sizeof nd + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1);
-    if (!flash_erase(DIR_OFFSET(ns), FLASH_SECTOR_SIZE) ||
-        !flash_program(DIR_OFFSET(ns), secbuf, plen)) {
-        snprintf(err, errn, "directory write failed");
+    if (dir_commit(&nd, err, errn))
         return -1;
-    }
-    if (!dir_valid(dir_in_flash(ns)) || memcmp(dir_in_flash(ns), &nd, sizeof nd) != 0) {
-        snprintf(err, errn, "directory read-back mismatch");
-        return -1;
-    }
-
-    cyw43_arch_lwip_begin();
-    cur = nd;
-    cur_sector = ns;
-    cur_verified = true;
-    cyw43_arch_lwip_end();
+    verified[row] = true;
 
     char hex[65];
     sha256_hex(e->sha256, hex);
-    printf("store: wrote \"%s\" (%s, %lu bytes) to image space %d, directory %c seq %lu, sha256 %s\n",
-           e->name, store_format_name(fmt), (unsigned long)e->size, wr.slot,
-           ns ? 'B' : 'A', (unsigned long)nd.seq, hex);
+    printf("store: row %d <- \"%s\" (%s, %lu bytes) in image space %d, seq %lu, sha256 %s\n",
+           row + 1, e->name, store_format_name(fmt), (unsigned long)e->size, wr.slot,
+           (unsigned long)cur.seq, hex);
+    return 0;
+}
+
+int store_mount(int row, char *err, size_t errn)
+{
+    if (row < -1 || row >= STORE_ROWS) {
+        snprintf(err, errn, "bad row");
+        return -1;
+    }
+    if (row >= 0 && !cur.e[row].used) {
+        snprintf(err, errn, "that row is empty");
+        return -1;
+    }
+    if (row == cur.current)
+        return 0;
+    dir_t nd = cur;
+    nd.current = row;
+    if (dir_commit(&nd, err, errn))
+        return -1;
+    printf("store: mounted %s\n", row < 0 ? "nothing (drive empty)" : cur.e[row].name);
+    return 0;
+}
+
+int store_delete(int row, char *err, size_t errn)
+{
+    if (row < 0 || row >= STORE_ROWS) {
+        snprintf(err, errn, "bad row");
+        return -1;
+    }
+    if (!cur.e[row].used)
+        return 0;
+    dir_t nd = cur;
+    memset(&nd.e[row], 0, sizeof nd.e[row]);
+    if (nd.current == row)
+        nd.current = -1;
+    if (dir_commit(&nd, err, errn))
+        return -1;
+    verified[row] = false;
+    printf("store: row %d deleted\n", row + 1);
+    return 0;
+}
+
+int store_set_writable(int row, bool writable, char *err, size_t errn)
+{
+    if (row < 0 || row >= STORE_ROWS || !cur.e[row].used) {
+        snprintf(err, errn, "that row is empty");
+        return -1;
+    }
+    uint8_t flags = writable ? (cur.e[row].flags | IMG_FLAG_WRITABLE)
+                             : (cur.e[row].flags & (uint8_t)~IMG_FLAG_WRITABLE);
+    if (flags == cur.e[row].flags)
+        return 0;
+    dir_t nd = cur;
+    nd.e[row].flags = flags;
+    if (dir_commit(&nd, err, errn))
+        return -1;
+    printf("store: row %d %s\n", row + 1, writable ? "writable" : "write-protected");
     return 0;
 }

@@ -42,6 +42,7 @@ struct conn {
 
     // request body
     bool     want_body;
+    bool     hold;              // answer comes later (http_respond_deferred)
     uint8_t *body_dst;          // copy the body here, or
     http_sink_fn sink;          // hand it to sink (TCP ack deferred)
     size_t   body_len, body_got;
@@ -267,6 +268,11 @@ void http_stream_body(conn_t *c, size_t len, http_sink_fn sink, http_conn_fn don
     c->body_done = done;
 }
 
+void http_hold(conn_t *c)
+{
+    c->hold = true;
+}
+
 void http_body_consumed(conn_t *c, size_t n)
 {
     while (n) {
@@ -431,6 +437,10 @@ static void start_request(conn_t *c, size_t head_len)
         c->st = ST_BODY;
         if (c->expect_continue)
             tcp_write(c->pcb, "HTTP/1.1 100 Continue\r\n\r\n", 25, TCP_WRITE_FLAG_COPY);
+        return;
+    }
+    if (c->hold && !c->responded) {
+        c->st = ST_HELD;        // any request body is ignored (acknowledged)
         return;
     }
     if (!c->responded)
