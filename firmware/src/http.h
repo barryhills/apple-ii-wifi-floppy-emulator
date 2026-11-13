@@ -38,5 +38,16 @@ void http_receive_body(conn_t *c, uint8_t *dst, size_t len, http_conn_fn done);
 void http_respond_deferred(conn_t *c, int code, const char *ctype,
                            const void *body, size_t len);
 
+// Response body produced on demand: fill(ctx, offset, dst, n) must write
+// exactly n bytes of the body starting at offset (n <= HTTP_FILL_MAX).
+#define HTTP_FILL_MAX 1460
+typedef void (*http_fill_fn)(void *ctx, size_t offset, uint8_t *dst, size_t n);
+void http_respond_stream(conn_t *c, int code, const char *ctype, size_t len,
+                         http_fill_fn fill, void *ctx, const char *extra_headers);
+
+// Per-connection pointer for the handler's own state.
+void  http_set_user(conn_t *c, void *p);
+void *http_user(const conn_t *c);
+
 // fn runs once when the connection is freed, for any reason.
 void http_set_on_close(conn_t *c, http_conn_fn fn);

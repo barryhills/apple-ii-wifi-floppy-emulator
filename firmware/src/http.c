@@ -53,12 +53,16 @@ struct conn {
     const uint8_t *body;
     size_t   blen, boff;
     void    *body_heap;
+    http_fill_fn fill;          // body generated on demand (body == NULL)
+    void    *fill_ctx;
+    void    *user;
 
     http_conn_fn on_close;
     char     req[REQ_MAX + 1];
 };
 
 static http_handler_t handler;
+static uint8_t fill_buf[HTTP_FILL_MAX];   // lwIP context is single-threaded
 
 static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err);
 static err_t on_sent(void *arg, struct tcp_pcb *pcb, u16_t len);
@@ -125,7 +129,7 @@ static err_t conn_push(conn_t *c)
             src = (const uint8_t *)c->head + c->hoff;
             left = c->hlen - c->hoff;
         } else if (c->boff < c->blen) {
-            src = c->body + c->boff;
+            src = c->fill ? fill_buf : c->body + c->boff;
             left = c->blen - c->boff;
         } else {
             break;
@@ -135,6 +139,11 @@ static err_t conn_push(conn_t *c)
             break;
         if (n > left)
             n = left;
+        if (!in_head && c->fill) {
+            if (n > HTTP_FILL_MAX)
+                n = HTTP_FILL_MAX;
+            c->fill(c->fill_ctx, c->boff, fill_buf, n);
+        }
         err_t e;
         while ((e = tcp_write(c->pcb, src, (u16_t)n, TCP_WRITE_FLAG_COPY)) == ERR_MEM && n > 512)
             n /= 2;             // heap tight: try a smaller piece
@@ -206,6 +215,17 @@ void http_respond(conn_t *c, int code, const char *ctype, const void *body,
     c->body = body;
     c->blen = len;
 }
+
+void http_respond_stream(conn_t *c, int code, const char *ctype, size_t len,
+                         http_fill_fn fill, void *ctx, const char *extra_headers)
+{
+    http_respond(c, code, ctype, NULL, len, false, extra_headers);
+    c->fill = fill;
+    c->fill_ctx = ctx;
+}
+
+void  http_set_user(conn_t *c, void *p) { c->user = p; }
+void *http_user(const conn_t *c)        { return c->user; }
 
 void http_respond_text(conn_t *c, int code, const char *msg)
 {

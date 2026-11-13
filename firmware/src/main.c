@@ -35,11 +35,13 @@ int main(void)
     store_init();
     net_init();
 
-    // LED: fast blink while connecting, steady on when up.
+    // LED heartbeat from the main loop (100 ms ticks): 5 Hz while connecting
+    // to WiFi, 1 Hz once up. A steady LED, on or off, means the loop stopped.
     for (unsigned tick = 0;; tick++) {
         net_poll();
         api_poll();
-        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, net_is_up() || (tick & 1));
+        bool led = net_is_up() ? (tick % 10) < 5 : (tick & 1);
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led);
 
         int ch = getchar_timeout_us(0);
         if (ch == '\r' || ch == '\n')

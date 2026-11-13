@@ -32,7 +32,8 @@ progress{width:100%;margin-top:12px}
 <section>
 <h2>Disk image</h2>
 <dl id="img"><dt>Image</dt><dd>&hellip;</dd></dl>
-<div class="row"><a class="btn" id="dl" href="/image" download hidden>Download</a></div>
+<div class="row"><a class="btn" id="dl" href="/image" download hidden>Download</a>
+<a class="btn" id="dlw" href="/image.woz" download hidden>Download as WOZ</a></div>
 <div class="row">
 <input type="file" id="file" accept=".dsk,.do">
 <button class="primary" id="up" disabled>Upload</button>
@@ -81,10 +82,13 @@ async function tick() {
         ['Flash check', im.verified ? 'OK' : 'MISMATCH', im.verified ? 'ok' : 'bad'],
       ]);
       $('dl').hidden = false;
+      $('dlw').hidden = false;
+      $('dlw').setAttribute('download', im.name.replace(/\.(dsk|do)$/i, '') + '.woz');
       $('dl').setAttribute('download', im.name);
     } else {
       rows($('img'), [['Image', 'none stored']]);
       $('dl').hidden = true;
+      $('dlw').hidden = true;
     }
     rows($('dev'), [
       ['Hostname', s.hostname + '.local'],

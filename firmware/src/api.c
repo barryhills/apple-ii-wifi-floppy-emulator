@@ -10,6 +10,7 @@
 // still being read from.
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
@@ -20,6 +21,7 @@
 #include "json.h"
 #include "status.h"
 #include "store.h"
+#include "woz.h"
 
 extern const unsigned char index_html[];
 extern const unsigned int  index_html_len;
@@ -88,6 +90,98 @@ static void get_image(conn_t *c)
     http_respond(c, 200, "application/octet-stream", im.data, im.size, false, extra);
 }
 
+// ---- GET /image.woz: the stored .dsk encoded to GCR, as a WOZ 2 file.
+// The file is generated while it is sent, one track at a time. The WOZ CRC
+// needs every track first, so it is computed once per image and cached.
+
+typedef struct {
+    const uint8_t *dsk;
+    int     track;                      // track held in trk[], -1 = none
+    uint8_t hdr[WOZ_HEADER_BYTES];
+    uint8_t trk[WOZ_TRACK_BYTES];
+} woz_stream_t;
+
+static struct {
+    bool     valid;
+    uint8_t  sha256[32];
+    uint32_t crc;
+    uint32_t bits[GCR_TRACKS];
+} woz_cache;
+
+static void woz_fill(void *ctx, size_t off, uint8_t *dst, size_t n)
+{
+    woz_stream_t *w = ctx;
+    while (n) {
+        size_t chunk;
+        if (off < WOZ_HEADER_BYTES) {
+            chunk = WOZ_HEADER_BYTES - off;
+            if (chunk > n)
+                chunk = n;
+            memcpy(dst, w->hdr + off, chunk);
+        } else {
+            size_t t = (off - WOZ_HEADER_BYTES) / WOZ_TRACK_BYTES;
+            size_t o = (off - WOZ_HEADER_BYTES) % WOZ_TRACK_BYTES;
+            if (w->track != (int)t) {
+                gcr_encode_track(w->trk, w->dsk + t * GCR_TRACK_DATA,
+                                 (unsigned)t, GCR_DEFAULT_VOLUME);
+                w->track = (int)t;
+            }
+            chunk = WOZ_TRACK_BYTES - o;
+            if (chunk > n)
+                chunk = n;
+            memcpy(dst, w->trk + o, chunk);
+        }
+        dst += chunk;
+        off += chunk;
+        n -= chunk;
+    }
+}
+
+static void woz_closed(conn_t *c)
+{
+    free(http_user(c));
+    downloads_active--;
+}
+
+static void get_image_woz(conn_t *c)
+{
+    image_info_t im;
+    if (!store_image(&im)) {
+        http_respond_text(c, 404, "no image stored\n");
+        return;
+    }
+    woz_stream_t *w = malloc(sizeof *w);
+    if (!w) {
+        http_respond_text(c, 500, "out of memory\n");
+        return;
+    }
+    static const char creator[] = "a2drive " A2DRIVE_VERSION;
+    if (!woz_cache.valid || memcmp(woz_cache.sha256, im.sha256, 32) != 0) {
+        woz_cache.crc = woz_prepare(im.data, woz_cache.bits, w->trk, creator, 1);
+        memcpy(woz_cache.sha256, im.sha256, 32);
+        woz_cache.valid = true;
+    }
+    w->dsk = im.data;
+    w->track = -1;
+    woz_header(w->hdr, woz_cache.bits, woz_cache.crc, creator, 1);
+
+    // name.dsk / name.do -> name.woz
+    char name[IMAGE_NAME_MAX + 4], extra[200];
+    sanitize_name(name, im.name);
+    char *dot = strrchr(name, '.');
+    if (dot && (strcmp(dot, ".dsk") == 0 || strcmp(dot, ".DSK") == 0 ||
+                strcmp(dot, ".do") == 0 || strcmp(dot, ".DO") == 0))
+        *dot = 0;
+    strcat(name, ".woz");
+    snprintf(extra, sizeof extra, "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
+
+    downloads_active++;
+    http_set_user(c, w);
+    http_set_on_close(c, woz_closed);
+    http_respond_stream(c, 200, "application/octet-stream", WOZ_FILE_BYTES,
+                        woz_fill, w, extra);
+}
+
 static void put_image(conn_t *c)
 {
     if (up_state != UP_IDLE) {
@@ -144,6 +238,11 @@ static void handle(conn_t *c)
             put_image(c);
         else
             http_respond(c, 405, "text/plain", "GET or PUT\n", 11, false, "Allow: GET, PUT\r\n");
+    } else if (strcmp(p, "/image.woz") == 0) {
+        if (get)
+            get_image_woz(c);
+        else
+            http_respond(c, 405, "text/plain", "GET only\n", 9, false, "Allow: GET\r\n");
     } else {
         http_respond_text(c, 404, "not found\n");
     }

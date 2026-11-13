@@ -11,6 +11,7 @@
 #include "pico/cyw43_arch.h"
 #include "hardware/flash.h"
 
+#include "crc32.h"
 #include "store.h"
 
 #define STORE_OFFSET    (1u << 20)
@@ -56,14 +57,7 @@ static uint8_t secbuf[FLASH_SECTOR_SIZE] __attribute__((aligned(4)));
 
 static uint32_t crc32(const void *data, size_t n)
 {
-    const uint8_t *p = data;
-    uint32_t c = 0xFFFFFFFFu;
-    while (n--) {
-        c ^= *p++;
-        for (int k = 0; k < 8; k++)
-            c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
-    }
-    return ~c;
+    return crc32_update(0, data, n);
 }
 
 void sha256_bytes(const uint8_t *data, size_t n, uint8_t out[32])

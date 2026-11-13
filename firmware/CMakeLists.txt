@@ -77,6 +77,9 @@ add_executable(a2drive
     src/store.c
     src/clock.c
     src/json.c
+    src/gcr.c
+    src/woz.c
+    src/crc32.c
     src/status.c
     ${CMAKE_CURRENT_BINARY_DIR}/generated/index_html.c
 )
@@ -86,8 +89,9 @@ target_include_directories(a2drive PRIVATE
 )
 target_compile_options(a2drive PRIVATE -Wall -Wextra)
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.2-m2"
+    A2DRIVE_VERSION="0.3-m3"
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
+    PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages
 )
 target_link_libraries(a2drive
     pico_stdlib

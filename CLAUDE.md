@@ -24,10 +24,13 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
 - **Staged milestones, each ending in a test Barry runs.** Barry sets the stages
   and tests; Claude owns internals within a stage. Do off-target testing (Mac,
   bare Pico) wherever possible before needing the //e.
-- **Verify against primary sources** (Apple drawings, *Beneath Apple DOS*,
-  *Understanding the Apple II*, RP2350 datasheet, Pico SDK docs, WOZ spec, working
-  source code). Flag anything unverified. Do not rely on recall for format or
-  timing details, and do not use Wikipedia for syntax or format facts.
+- **Verify against sources, not recall.** Primary sources preferred (Apple
+  drawings, *Beneath Apple DOS*, *Understanding the Apple II*, RP2350
+  datasheet, Pico SDK docs, WOZ spec, working source code). Since 2026-11-13
+  Barry also allows secondary sources (articles, forum posts, emulator source,
+  scans). Cite the source in code comments, and flag anything unverified or
+  resting on a single secondary source. Never rely on recall for format or
+  timing details.
 - **New code is the prime suspect.** The //e, DOS 3.3 and the controller are 40
   years proven. When something fails, test our code's own logic first.
 - Straight talk, no padding. Barry is a retired OS-kernel engineer; he reads C.
@@ -56,6 +59,23 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   wrong size 400, no length 411, concurrent upload 409, aborted upload leaves
   the stored image intact; 14 uploads rotate through all image spaces.
   Next: milestone 3 (GCR encoder) and/or stored config + config page.
+- **Milestone 3 passed** 2026-11-13 (Barry: BOOT!!.woz from the Pico works in
+  Virtual ][). Branch `m3-gcr-encoder`. Details:
+  `GET /image.woz` streams a WOZ 2 (INFO v2) built by `src/gcr.c`/`src/woz.c`;
+  `tools/woz_check.py` (independent latch-model decoder) decodes all 560
+  sectors identical to the .dsk; Pico output bit-identical to the host build
+  (`tools/host/mkwoz.c`). 50,144 bits/track, gaps 16/6/16. The WOZ download
+  was a test harness for the encoder, not a product feature.
+- **Direction confirmed 2026-11-13:** the drive stores .dsk and .woz natively
+  and serves either; no conversion tool for the user. Both feed one per-track
+  bit-stream player (DSK: encode the track on head move; WOZ: look the track
+  up). Next: drop the WOZ button, accept native .woz uploads, then the PIO
+  player (milestones 4-5).
+- **Unexplained hang (2026-11-13):** v0.2-m2 froze while idle (no USB serial,
+  no picotool reset, no network) after Barry's M2 tests; cured by replug.
+  Cause unknown. Since v0.3-m3 the LED is a heartbeat (5 Hz connecting, 1 Hz
+  up; steady = main loop stopped) and boot waits 2 s for a USB console.
+  Next time: capture the console before replugging.
 
 ## Toolchain (Mac, Intel, native x86_64)
 
@@ -258,8 +278,9 @@ into the decoder.
   pattern a normal seek never produces, motor off. Needs analysis of the RWTS
   seek routine to pick a provably unused pattern. Knock steps must not move the
   virtual head.
-- **Which Mac emulator** Barry uses for milestone 3 (determines WOZ version
-  support). Not yet answered.
+- **Mac emulator (answered 2026-11-13):** Virtual ][ 12.0
+  (`nl.xs4all.gp.virtualii`). Its built-in help says "supports both version 1
+  and version 2 of the Woz file format". Milestone 3 targets WOZ 2.
 - **WOZ input** — quarter-track head tracking, larger slots. Read first; WOZ
   write and copy-protection fidelity (weak bits, cross-track sync) last.
 - **Out of scope:** INIT/formatting (push a blank image instead), SD card,
