@@ -89,7 +89,7 @@ target_include_directories(a2drive PRIVATE
 )
 target_compile_options(a2drive PRIVATE -Wall -Wextra)
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.3-m3"
+    A2DRIVE_VERSION="0.4-woz"
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages
 )

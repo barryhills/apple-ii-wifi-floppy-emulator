@@ -43,9 +43,10 @@ size_t status_json(char *buf, size_t n)
         if (im.uploaded)
             snprintf(up, sizeof up, "%lld", (long long)im.uploaded);
         snprintf(image, sizeof image,
-                 "{\"name\":\"%s\",\"size\":%lu,\"sha256\":\"%s\","
+                 "{\"name\":\"%s\",\"format\":\"%s\",\"size\":%lu,\"sha256\":\"%s\","
                  "\"uploaded\":%s,\"verified\":%s}",
-                 name, (unsigned long)im.size, hex, up, im.verified ? "true" : "false");
+                 name, store_format_name(im.format), (unsigned long)im.size, hex, up,
+                 im.verified ? "true" : "false");
     }
 
     int len = snprintf(buf, n,

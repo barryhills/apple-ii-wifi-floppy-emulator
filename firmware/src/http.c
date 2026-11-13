@@ -41,8 +41,11 @@ struct conn {
     bool     expect_continue;
 
     // request body
-    uint8_t *body_dst;
+    bool     want_body;
+    uint8_t *body_dst;          // copy the body here, or
+    http_sink_fn sink;          // hand it to sink (TCP ack deferred)
     size_t   body_len, body_got;
+    size_t   held_now;          // sink bytes in the current on_recv call
     http_conn_fn body_done;
     size_t   discard_left;
 
@@ -236,8 +239,14 @@ void http_respond_deferred(conn_t *c, int code, const char *ctype,
                            const void *body, size_t len)
 {
     http_respond(c, code, ctype, body, len, true, NULL);
-    if (c->st == ST_HELD)
+    if (c->st == ST_HELD) {
         c->st = ST_SEND;
+    } else if (c->st == ST_BODY) {
+        // Answered early (error): drain the rest so the client reads it.
+        c->sink = NULL;
+        c->discard_left = c->body_len - c->body_got;
+        c->st = c->discard_left ? ST_DISCARD : ST_SEND;
+    }
     conn_push(c);
 }
 
@@ -249,8 +258,27 @@ long http_content_length(const conn_t *c)  { return c->content_length; }
 
 void http_set_on_close(conn_t *c, http_conn_fn fn) { c->on_close = fn; }
 
+void http_stream_body(conn_t *c, size_t len, http_sink_fn sink, http_conn_fn done)
+{
+    c->want_body = true;
+    c->sink = sink;
+    c->body_len = len;
+    c->body_got = 0;
+    c->body_done = done;
+}
+
+void http_body_consumed(conn_t *c, size_t n)
+{
+    while (n) {
+        u16_t k = n > 0xFFFF ? 0xFFFF : (u16_t)n;
+        tcp_recved(c->pcb, k);
+        n -= k;
+    }
+}
+
 void http_receive_body(conn_t *c, uint8_t *dst, size_t len, http_conn_fn done)
 {
+    c->want_body = true;
     c->body_dst = dst;
     c->body_len = len;
     c->body_got = 0;
@@ -356,7 +384,12 @@ static void feed(conn_t *c, const uint8_t *d, size_t n)
         size_t take = c->body_len - c->body_got;
         if (take > n)
             take = n;
-        memcpy(c->body_dst + c->body_got, d, take);
+        if (c->sink) {
+            c->sink(c, d, take);
+            c->held_now += take;
+        } else {
+            memcpy(c->body_dst + c->body_got, d, take);
+        }
         c->body_got += take;
         if (c->body_got == c->body_len) {
             c->st = ST_HELD;
@@ -394,7 +427,7 @@ static void start_request(conn_t *c, size_t head_len)
     }
     handler(c);
 
-    if (c->body_dst && !c->responded) {
+    if (c->want_body && !c->responded) {
         c->st = ST_BODY;
         if (c->expect_continue)
             tcp_write(c->pcb, "HTTP/1.1 100 Continue\r\n\r\n", 25, TCP_WRITE_FLAG_COPY);
@@ -426,12 +459,14 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
             return ERR_OK;                      // still owe a reply
         return conn_close(c);
     }
-    tcp_recved(pcb, p->tot_len);
     if (!c || c->closing) {
+        tcp_recved(pcb, p->tot_len);
         pbuf_free(p);
         return ERR_OK;
     }
     c->idle = 0;
+    c->held_now = 0;
+    u16_t tot = p->tot_len;
 
     if (c->st == ST_HEAD) {
         uint16_t room = REQ_MAX - c->len;
@@ -441,6 +476,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
         c->req[c->len] = 0;
         char *end = strstr(c->req, "\r\n\r\n");
         if (!end) {
+            tcp_recved(pcb, tot);
             pbuf_free(p);
             if (c->len < REQ_MAX)
                 return ERR_OK;                  // need more
@@ -457,6 +493,10 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
         feed_pbuf(c, p, 0);
     }
     pbuf_free(p);
+    // Acknowledge everything except bytes a sink still holds; the consumer
+    // acknowledges those through http_body_consumed().
+    if (tot > c->held_now)
+        tcp_recved(pcb, (u16_t)(tot - c->held_now));
     return conn_push(c);
 }
 

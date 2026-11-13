@@ -1,10 +1,11 @@
 #pragma once
+#include <stdbool.h>
 
 // HTTP routes:
 //   GET /         configurator page
 //   GET /status   JSON status
 //   GET /image    download the stored image
-//   GET /image.woz  the stored image GCR-encoded, as a WOZ 2 file
-//   PUT /image    upload a 143,360-byte .dsk (?name=file.dsk)
+//   GET /image.woz  test only: a stored .dsk GCR-encoded as WOZ 2
+//   PUT /image    upload a .dsk (143,360 bytes) or .woz (?name=file)
 void api_init(void);    // registers with the HTTP engine; lwIP lock held
-void api_poll(void);    // main loop: commits a completed upload to flash
+bool api_poll(void);    // main loop: moves upload data to flash; true while busy

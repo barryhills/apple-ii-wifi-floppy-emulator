@@ -1,19 +1,23 @@
-// HTTP routes and the upload/commit flow.
+// HTTP routes and the upload flow.
 //
-// Upload: PUT /image streams the body into upload_buf (lwIP context). When it
-// is complete the connection is held and api_poll() (main loop) writes it to
-// flash, then answers. The mounted image is untouched until store_commit()
-// switches the directory, so a failed or abandoned upload changes nothing.
+// Upload (PUT /image): the body streams through a RAM ring. lwIP callbacks
+// put bytes in (upload_sink); api_poll() in the main loop takes them out and
+// writes them to a free flash image space, acknowledging them to TCP only
+// then, so flash speed throttles the sender. The ring is larger than the TCP
+// window, so it can never overflow. When the last byte is in flash the image
+// is validated (.dsk size, or a WOZ that parses) and only then does the
+// directory switch to it; the reply goes out after that. A failed or
+// abandoned upload leaves the mounted image untouched.
 //
-// Downloads are served straight from flash. A commit waits until no download
-// is in progress, because a new image may reuse the space an old one is
-// still being read from.
+// Downloads are served straight from flash. Each records which image space
+// it reads, and a new upload never writes into a space being read.
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
+#include "lwip/opt.h"
 
 #include "api.h"
 #include "clock.h"
@@ -26,14 +30,21 @@
 extern const unsigned char index_html[];
 extern const unsigned int  index_html_len;
 
-typedef enum { UP_IDLE, UP_RECEIVING, UP_READY, UP_COMMITTING } up_state_t;
+#define RING_SIZE  16384
+_Static_assert(RING_SIZE >= TCP_WND, "upload ring must hold a full TCP window");
 
-static volatile up_state_t up_state;
-static conn_t *up_conn;                 // connection owed the upload reply
-static volatile int downloads_active;
-static char up_name[IMAGE_NAME_MAX];
+typedef enum { UP_IDLE, UP_RECEIVING, UP_RECEIVED, UP_ABORTED } up_state_t;
+
+// All of this is touched only with the lwIP lock held (callbacks hold it;
+// api_poll takes it), except the flash writes, which run without it.
+static up_state_t up_state;
+static conn_t    *up_conn;              // connection owed the upload reply
+static char       up_name[IMAGE_NAME_MAX];
+static uint32_t   up_size;
 static absolute_time_t up_started;
-static uint8_t upload_buf[DSK_SIZE] __attribute__((aligned(4)));
+static uint8_t    ring[RING_SIZE];
+static uint32_t   ring_head, ring_tail; // free-running byte counters
+static uint8_t    readers[STORE_SLOTS_MAX];    // downloads per image space
 
 // Printable ASCII only; no quote, backslash or slash (it goes into a
 // Content-Disposition header and JSON).
@@ -49,27 +60,37 @@ static void sanitize_name(char *dst, const char *src)
         strcpy(dst, "image.dsk");
 }
 
+static bool ends_with_ci(const char *s, const char *suffix)
+{
+    size_t n = strlen(s), k = strlen(suffix);
+    if (k > n)
+        return false;
+    for (size_t i = 0; i < k; i++) {
+        char a = s[n - k + i], b = suffix[i];
+        if (a >= 'A' && a <= 'Z')
+            a += 'a' - 'A';
+        if (a != b)
+            return false;
+    }
+    return true;
+}
+
+static uint32_t reader_mask(void)
+{
+    uint32_t m = 0;
+    for (int i = 0; i < STORE_SLOTS_MAX; i++)
+        if (readers[i])
+            m |= 1u << i;
+    return m;
+}
+
+// ---------------------------------------------------------------- GET /image
+
 static void download_closed(conn_t *c)
 {
-    (void)c;
-    downloads_active--;
-}
-
-static void upload_closed(conn_t *c)
-{
-    if (up_conn != c)
-        return;
-    up_conn = NULL;
-    if (up_state == UP_RECEIVING) {
-        up_state = UP_IDLE;
-        printf("upload: connection lost before the image was complete; nothing changed\n");
-    }
-}
-
-static void upload_complete(conn_t *c)
-{
-    (void)c;
-    up_state = UP_READY;    // reply comes from api_poll() after the flash write
+    unsigned slot = (unsigned)(uintptr_t)http_user(c) - 1;
+    if (slot < STORE_SLOTS_MAX && readers[slot])
+        readers[slot]--;
 }
 
 static void get_image(conn_t *c)
@@ -85,20 +106,23 @@ static void get_image(conn_t *c)
     snprintf(extra, sizeof extra,
              "Content-Disposition: attachment; filename=\"%s\"\r\n"
              "X-Image-SHA256: %s\r\n", name, hex);
-    downloads_active++;
+    readers[im.slot]++;
+    http_set_user(c, (void *)(uintptr_t)(im.slot + 1));
     http_set_on_close(c, download_closed);
     http_respond(c, 200, "application/octet-stream", im.data, im.size, false, extra);
 }
 
-// ---- GET /image.woz: the stored .dsk encoded to GCR, as a WOZ 2 file.
-// The file is generated while it is sent, one track at a time. The WOZ CRC
-// needs every track first, so it is computed once per image and cached.
+// ---------------------------------------------------- GET /image.woz (test)
+// Test endpoint, not on the page: a stored .dsk encoded to GCR and wrapped as
+// WOZ 2, so an emulator can check the encoder. Generated while it is sent;
+// the WOZ CRC needs every track first, so it is computed once per image.
 
 typedef struct {
     const uint8_t *dsk;
-    int     track;                      // track held in trk[], -1 = none
-    uint8_t hdr[WOZ_HEADER_BYTES];
-    uint8_t trk[WOZ_TRACK_BYTES];
+    unsigned slot;
+    int      track;                     // track held in trk[], -1 = none
+    uint8_t  hdr[WOZ_HEADER_BYTES];
+    uint8_t  trk[WOZ_TRACK_BYTES];
 } woz_stream_t;
 
 static struct {
@@ -139,8 +163,10 @@ static void woz_fill(void *ctx, size_t off, uint8_t *dst, size_t n)
 
 static void woz_closed(conn_t *c)
 {
-    free(http_user(c));
-    downloads_active--;
+    woz_stream_t *w = http_user(c);
+    if (readers[w->slot])
+        readers[w->slot]--;
+    free(w);
 }
 
 static void get_image_woz(conn_t *c)
@@ -148,6 +174,10 @@ static void get_image_woz(conn_t *c)
     image_info_t im;
     if (!store_image(&im)) {
         http_respond_text(c, 404, "no image stored\n");
+        return;
+    }
+    if (im.format != FMT_DSK) {
+        http_respond_text(c, 409, "the stored image is already WOZ; use GET /image\n");
         return;
     }
     woz_stream_t *w = malloc(sizeof *w);
@@ -162,24 +192,62 @@ static void get_image_woz(conn_t *c)
         woz_cache.valid = true;
     }
     w->dsk = im.data;
+    w->slot = im.slot;
     w->track = -1;
     woz_header(w->hdr, woz_cache.bits, woz_cache.crc, creator, 1);
 
-    // name.dsk / name.do -> name.woz
     char name[IMAGE_NAME_MAX + 4], extra[200];
     sanitize_name(name, im.name);
     char *dot = strrchr(name, '.');
-    if (dot && (strcmp(dot, ".dsk") == 0 || strcmp(dot, ".DSK") == 0 ||
-                strcmp(dot, ".do") == 0 || strcmp(dot, ".DO") == 0))
+    if (dot && (ends_with_ci(dot, ".dsk") || ends_with_ci(dot, ".do")))
         *dot = 0;
     strcat(name, ".woz");
     snprintf(extra, sizeof extra, "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
 
-    downloads_active++;
+    readers[im.slot]++;
     http_set_user(c, w);
     http_set_on_close(c, woz_closed);
-    http_respond_stream(c, 200, "application/octet-stream", WOZ_FILE_BYTES,
-                        woz_fill, w, extra);
+    http_respond_stream(c, 200, "application/octet-stream", WOZ_FILE_BYTES, woz_fill, w, extra);
+}
+
+// ---------------------------------------------------------------- PUT /image
+
+static void upload_sink(conn_t *c, const uint8_t *d, size_t n)
+{
+    (void)c;
+    if (up_state != UP_RECEIVING)
+        return;
+    if (n > RING_SIZE - (ring_head - ring_tail)) {      // cannot happen (see top)
+        printf("upload: ring overflow; aborting\n");
+        up_state = UP_ABORTED;
+        return;
+    }
+    while (n) {
+        uint32_t at = ring_head % RING_SIZE;
+        size_t k = RING_SIZE - at;
+        if (k > n)
+            k = n;
+        memcpy(ring + at, d, k);
+        ring_head += (uint32_t)k;
+        d += k;
+        n -= k;
+    }
+}
+
+static void upload_complete(conn_t *c)
+{
+    (void)c;
+    if (up_state == UP_RECEIVING)
+        up_state = UP_RECEIVED;     // reply comes from api_poll() after flash
+}
+
+static void upload_closed(conn_t *c)
+{
+    if (up_conn != c)
+        return;
+    up_conn = NULL;
+    if (up_state == UP_RECEIVING)   // all bytes in hand (RECEIVED) still commit
+        up_state = UP_ABORTED;
 }
 
 static void put_image(conn_t *c)
@@ -193,24 +261,37 @@ static void put_image(conn_t *c)
         http_respond_text(c, 411, "Content-Length required\n");
         return;
     }
-    if (cl != (long)DSK_SIZE) {
-        char msg[96];
-        snprintf(msg, sizeof msg, "a .dsk image must be exactly %u bytes; got %ld\n",
-                 DSK_SIZE, cl);
-        http_respond(c, 400, "text/plain; charset=utf-8", msg, strlen(msg), true, NULL);
-        return;
-    }
-    char raw[3 * IMAGE_NAME_MAX];
+    char raw[3 * IMAGE_NAME_MAX], msg[128];
     if (!http_query_param(c, "name", raw, sizeof raw))
         raw[0] = 0;
     sanitize_name(up_name, raw);
 
+    if (cl == 0 || cl > (long)IMAGE_MAX_SIZE) {
+        snprintf(msg, sizeof msg, "image must be 1 to %u bytes; got %ld\n", IMAGE_MAX_SIZE, cl);
+        http_respond(c, 413, "text/plain; charset=utf-8", msg, strlen(msg), true, NULL);
+        return;
+    }
+    if ((ends_with_ci(up_name, ".dsk") || ends_with_ci(up_name, ".do")) && cl != (long)DSK_SIZE) {
+        snprintf(msg, sizeof msg, "a .dsk image must be exactly %u bytes; got %ld\n", DSK_SIZE, cl);
+        http_respond(c, 400, "text/plain; charset=utf-8", msg, strlen(msg), true, NULL);
+        return;
+    }
+    char err[96];
+    if (store_write_begin((uint32_t)cl, reader_mask(), err, sizeof err)) {
+        snprintf(msg, sizeof msg, "%s\n", err);
+        http_respond(c, 507, "text/plain; charset=utf-8", msg, strlen(msg), true, NULL);
+        return;
+    }
+    ring_head = ring_tail = 0;
+    up_size = (uint32_t)cl;
     up_state = UP_RECEIVING;
     up_conn = c;
     up_started = get_absolute_time();
     http_set_on_close(c, upload_closed);
-    http_receive_body(c, upload_buf, DSK_SIZE, upload_complete);
+    http_stream_body(c, (size_t)cl, upload_sink, upload_complete);
 }
+
+// ---------------------------------------------------------------- routing
 
 static void handle(conn_t *c)
 {
@@ -253,26 +334,14 @@ void api_init(void)
     http_init(handle);
 }
 
-void api_poll(void)
+static void finish_upload(void)
 {
-    if (up_state != UP_READY)
-        return;
+    int64_t ms = absolute_time_diff_us(up_started, get_absolute_time()) / 1000;
+    char err[128];
+    int rc = store_write_finish(up_name, clock_unix(), err, sizeof err);
 
-    cyw43_arch_lwip_begin();
-    bool go = up_state == UP_READY && downloads_active == 0;
-    if (go)
-        up_state = UP_COMMITTING;
-    cyw43_arch_lwip_end();
-    if (!go)
-        return;
-
-    int64_t rx_ms = absolute_time_diff_us(up_started, get_absolute_time()) / 1000;
-    absolute_time_t t0 = get_absolute_time();
-    char err[96];
-    int rc = store_commit(upload_buf, DSK_SIZE, up_name, clock_unix(), err, sizeof err);
-    int64_t wr_ms = absolute_time_diff_us(t0, get_absolute_time()) / 1000;
-
-    char body[IMAGE_NAME_MAX * 6 + 160];
+    static char e[sizeof err * 6];                      // static: large for the
+    static char body[sizeof e + IMAGE_NAME_MAX * 6 + 200];  // shared IRQ stack
     int code;
     if (rc == 0) {
         image_info_t im;
@@ -281,15 +350,15 @@ void api_poll(void)
         json_escape(name, sizeof name, im.name);
         sha256_hex(im.sha256, hex);
         snprintf(body, sizeof body,
-                 "{\"ok\":true,\"name\":\"%s\",\"size\":%lu,\"sha256\":\"%s\"}\n",
-                 name, (unsigned long)im.size, hex);
+                 "{\"ok\":true,\"name\":\"%s\",\"format\":\"%s\",\"size\":%lu,\"sha256\":\"%s\"}\n",
+                 name, store_format_name(im.format), (unsigned long)im.size, hex);
         code = 200;
-        printf("upload: received in %lld ms, flash write+verify %lld ms\n",
-               (long long)rx_ms, (long long)wr_ms);
+        printf("upload: %lu bytes stored in %lld ms\n", (unsigned long)up_size, (long long)ms);
     } else {
-        snprintf(body, sizeof body, "{\"ok\":false,\"error\":\"%s\"}\n", err);
-        code = 500;
-        printf("upload: FAILED: %s\n", err);
+        json_escape(e, sizeof e, err);
+        snprintf(body, sizeof body, "{\"ok\":false,\"error\":\"%s\"}\n", e);
+        code = 422;
+        printf("upload: REJECTED: %s\n", err);
     }
 
     cyw43_arch_lwip_begin();
@@ -300,4 +369,58 @@ void api_poll(void)
     }
     up_state = UP_IDLE;
     cyw43_arch_lwip_end();
+}
+
+bool api_poll(void)
+{
+    static uint8_t chunk[4096];
+
+    if (up_state == UP_IDLE)
+        return false;
+
+    if (up_state == UP_ABORTED) {
+        store_write_abort();
+        cyw43_arch_lwip_begin();
+        ring_head = ring_tail = 0;
+        up_state = UP_IDLE;
+        cyw43_arch_lwip_end();
+        printf("upload: connection lost before the image was complete; nothing changed\n");
+        return false;
+    }
+
+    // Move up to 4 KB from the ring to flash, then let TCP send more.
+    cyw43_arch_lwip_begin();
+    uint32_t n = ring_head - ring_tail;
+    if (n > sizeof chunk)
+        n = sizeof chunk;
+    for (uint32_t i = 0; i < n; i++)
+        chunk[i] = ring[(ring_tail + i) % RING_SIZE];
+    ring_tail += n;
+    if (n && up_conn)
+        http_body_consumed(up_conn, n);
+    bool all_in = up_state == UP_RECEIVED && ring_head == ring_tail;
+    cyw43_arch_lwip_end();
+
+    if (n) {
+        char err[96];
+        if (store_write_chunk(chunk, n, err, sizeof err)) {
+            printf("upload: %s\n", err);
+            cyw43_arch_lwip_begin();
+            if (up_conn) {
+                conn_t *c = up_conn;
+                up_conn = NULL;
+                http_body_consumed(c, ring_head - ring_tail);   // release held bytes
+                static char e[sizeof err * 6], body[sizeof e + 40];
+                json_escape(e, sizeof e, err);
+                snprintf(body, sizeof body, "{\"ok\":false,\"error\":\"%s\"}\n", e);
+                http_respond_deferred(c, 500, "application/json", body, strlen(body));
+            }
+            up_state = UP_ABORTED;
+            cyw43_arch_lwip_end();
+            return true;
+        }
+    }
+    if (all_in)
+        finish_upload();
+    return true;
 }

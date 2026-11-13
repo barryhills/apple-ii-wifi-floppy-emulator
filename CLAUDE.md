@@ -69,8 +69,16 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
 - **Direction confirmed 2026-11-13:** the drive stores .dsk and .woz natively
   and serves either; no conversion tool for the user. Both feed one per-track
   bit-stream player (DSK: encode the track on head move; WOZ: look the track
-  up). Next: drop the WOZ button, accept native .woz uploads, then the PIO
-  player (milestones 4-5).
+  up).
+- **Native .woz storage passed** 2026-11-13 (Barry: both file types, persistence).
+  v0.4-woz, branch `m3b-woz-storage`. Details:
+  PUT /image accepts .dsk (143,360 bytes) or WOZ 1/2 (up to 256 KB),
+  validated by `woz_parse()` (signature, CRC, chunks, 5.25" only, every
+  referenced track); format shown on the page; WOZ button removed
+  (`/image.woz` kept as a hidden test endpoint for .dsk only). Uploads now
+  stream straight to a free flash image space (16 KB RAM ring, TCP ack
+  deferred until written; ~2 s per WOZ); the 140 KB upload RAM buffer is
+  gone (RAM in use 114 KB). Next: PIO player (milestones 4-5).
 - **Unexplained hang (2026-11-13):** v0.2-m2 froze while idle (no USB serial,
   no picotool reset, no network) after Barry's M2 tests; cured by replug.
   Cause unknown. Since v0.3-m3 the LED is a heartbeat (5 Hz connecting, 1 Hz

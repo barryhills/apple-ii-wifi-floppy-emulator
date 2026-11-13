@@ -33,6 +33,15 @@ void http_respond_text(conn_t *c, int code, const char *msg);
 // connection held and answer later with http_respond_deferred().
 void http_receive_body(conn_t *c, uint8_t *dst, size_t len, http_conn_fn done);
 
+// Stream a len-byte body to sink() instead of a buffer. Bytes handed to the
+// sink are NOT acknowledged to TCP until http_body_consumed() is called, so
+// a slow consumer throttles the sender. TCP never has more than TCP_WND
+// unacknowledged bytes in flight, so a sink with TCP_WND bytes of buffer
+// always has room. done() runs when all len bytes have reached the sink.
+typedef void (*http_sink_fn)(conn_t *c, const uint8_t *data, size_t n);
+void http_stream_body(conn_t *c, size_t len, http_sink_fn sink, http_conn_fn done);
+void http_body_consumed(conn_t *c, size_t n);   // lwIP lock held
+
 // Answer a held connection from outside its callbacks (lwIP lock held).
 // Copies the body. c must not be used afterwards.
 void http_respond_deferred(conn_t *c, int code, const char *ctype,

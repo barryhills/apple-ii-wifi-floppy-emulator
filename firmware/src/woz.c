@@ -1,6 +1,7 @@
 // WOZ 2 writer. Field offsets from the WOZ 2 reference
 // (applesaucefdc.com/woz/reference2, fetched 2026-11-13). Little-endian.
 
+#include <stdio.h>
 #include <string.h>
 #include "crc32.h"
 #include "woz.h"
@@ -81,4 +82,115 @@ uint32_t woz_prepare(const uint8_t *dsk, uint32_t bits[GCR_TRACKS],
         crc = crc32_update(crc, scratch, WOZ_TRACK_BYTES);
     }
     return crc;
+}
+
+// ---------------------------------------------------------------- reader
+
+static uint32_t rd16(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8; }
+static uint32_t rd32(const uint8_t *p) { return rd16(p) | rd16(p + 2) << 16; }
+
+#define WOZ1_TRK_BYTES   6656       // WOZ 1: fixed-size TRK records
+#define WOZ1_BITS_BYTES  6646       //   of which the bit stream
+#define WOZ1_BIT_COUNT   6648       //   offset of the uint16 bit count
+
+int woz_track_bits(const woz_info_t *w, unsigned q, const uint8_t **bits, uint32_t *nbits)
+{
+    if (q >= 160 || w->tmap[q] == 0xFF)
+        return 0;
+    unsigned idx = w->tmap[q];
+    if (w->version == 1) {
+        if ((size_t)(idx + 1) * WOZ1_TRK_BYTES > w->trks_len)
+            return 0;
+        const uint8_t *rec = w->trks + (size_t)idx * WOZ1_TRK_BYTES;
+        uint32_t n = rd16(rec + WOZ1_BIT_COUNT);
+        if (n == 0 || n > WOZ1_BITS_BYTES * 8u)
+            return 0;
+        *bits = rec;
+        *nbits = n;
+        return 1;
+    }
+    if (idx >= 160 || w->trks_len < 160 * 8)
+        return 0;
+    const uint8_t *e = w->trks + 8 * idx;
+    uint32_t start = rd16(e), count = rd16(e + 2), n = rd32(e + 4);
+    if (start < 3 || count == 0 || (size_t)(start + count) * 512 > w->len ||
+        n == 0 || n > count * 4096u)
+        return 0;
+    *bits = w->file + (size_t)start * 512;
+    *nbits = n;
+    return 1;
+}
+
+int woz_parse(const uint8_t *f, size_t len, woz_info_t *w, char *err, size_t errn)
+{
+    memset(w, 0, sizeof *w);
+    w->file = f;
+    w->len = len;
+    if (len < 256) {
+        snprintf(err, errn, "too short for a WOZ file");
+        return -1;
+    }
+    if (memcmp(f, "WOZ1\xFF\x0A\x0D\x0A", 8) == 0)
+        w->version = 1;
+    else if (memcmp(f, "WOZ2\xFF\x0A\x0D\x0A", 8) == 0)
+        w->version = 2;
+    else {
+        snprintf(err, errn, "not a WOZ file (bad signature)");
+        return -1;
+    }
+    uint32_t crc = rd32(f + 8);
+    if (crc != 0 && crc32_update(0, f + 12, len - 12) != crc) {
+        snprintf(err, errn, "WOZ CRC mismatch: file is damaged or truncated");
+        return -1;
+    }
+
+    const uint8_t *info = NULL;
+    size_t off = 12;
+    while (off + 8 <= len) {
+        const uint8_t *id = f + off;
+        uint32_t sz = rd32(f + off + 4);
+        size_t data = off + 8;
+        if (sz > len - data) {
+            snprintf(err, errn, "WOZ chunk %.4s runs past the end of the file", (const char *)id);
+            return -1;
+        }
+        if (memcmp(id, "INFO", 4) == 0 && sz >= 60)
+            info = f + data;
+        else if (memcmp(id, "TMAP", 4) == 0 && sz >= 160)
+            w->tmap = f + data;
+        else if (memcmp(id, "TRKS", 4) == 0) {
+            w->trks = f + data;
+            w->trks_len = sz;
+        }
+        off = data + sz;
+    }
+    if (!info || !w->tmap || !w->trks) {
+        snprintf(err, errn, "WOZ file lacks an INFO, TMAP or TRKS chunk");
+        return -1;
+    }
+    if (info[1] != 1) {
+        snprintf(err, errn, "only 5.25-inch WOZ images are supported (disk type %u)", info[1]);
+        return -1;
+    }
+    w->write_protected = info[2];
+
+    uint8_t seen[160] = { 0 };
+    for (unsigned q = 0; q < 160; q++) {
+        const uint8_t *b;
+        uint32_t n;
+        if (w->tmap[q] == 0xFF)
+            continue;
+        if (!woz_track_bits(w, q, &b, &n)) {
+            snprintf(err, errn, "WOZ track entry %u (quarter track %u) is invalid",
+                     w->tmap[q], q);
+            return -1;
+        }
+        if (!seen[w->tmap[q]]++)
+            w->tracks++;
+    }
+    if (w->tracks == 0) {
+        snprintf(err, errn, "WOZ file has no tracks");
+        return -1;
+    }
+    return 0;
 }

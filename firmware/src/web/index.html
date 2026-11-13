@@ -32,10 +32,9 @@ progress{width:100%;margin-top:12px}
 <section>
 <h2>Disk image</h2>
 <dl id="img"><dt>Image</dt><dd>&hellip;</dd></dl>
-<div class="row"><a class="btn" id="dl" href="/image" download hidden>Download</a>
-<a class="btn" id="dlw" href="/image.woz" download hidden>Download as WOZ</a></div>
+<div class="row"><a class="btn" id="dl" href="/image" download hidden>Download</a></div>
 <div class="row">
-<input type="file" id="file" accept=".dsk,.do">
+<input type="file" id="file" accept=".dsk,.do,.woz">
 <button class="primary" id="up" disabled>Upload</button>
 </div>
 <progress id="prog" max="1" value="0" hidden></progress>
@@ -50,7 +49,8 @@ progress{width:100%;margin-top:12px}
 </main>
 
 <script>
-const DSK = 143360, $ = id => document.getElementById(id);
+const DSK = 143360, MAX = 262144, $ = id => document.getElementById(id);
+const FORMATS = {dsk: 'DSK (DOS 3.3 order)', woz1: 'WOZ 1', woz2: 'WOZ 2'};
 let busy = false;
 
 function rows(el, pairs) {
@@ -76,19 +76,17 @@ async function tick() {
     if (im) {
       rows($('img'), [
         ['Name', im.name],
+        ['Format', FORMATS[im.format] || im.format],
         ['Size', im.size.toLocaleString() + ' bytes'],
         ['SHA-256', im.sha256, 'mono'],
         ['Uploaded', when(im.uploaded)],
         ['Flash check', im.verified ? 'OK' : 'MISMATCH', im.verified ? 'ok' : 'bad'],
       ]);
       $('dl').hidden = false;
-      $('dlw').hidden = false;
-      $('dlw').setAttribute('download', im.name.replace(/\.(dsk|do)$/i, '') + '.woz');
       $('dl').setAttribute('download', im.name);
     } else {
       rows($('img'), [['Image', 'none stored']]);
       $('dl').hidden = true;
-      $('dlw').hidden = true;
     }
     rows($('dev'), [
       ['Hostname', s.hostname + '.local'],
@@ -109,8 +107,14 @@ $('file').onchange = () => {
   const f = $('file').files[0];
   msg('');
   if (!f) { $('up').disabled = true; return; }
-  if (f.size !== DSK) {
+  const woz = /\.woz$/i.test(f.name);
+  if (!woz && f.size !== DSK) {
     msg(`${f.name} is ${f.size.toLocaleString()} bytes; a .dsk image must be exactly ${DSK.toLocaleString()}.`, 'bad');
+    $('up').disabled = true;
+    return;
+  }
+  if (woz && f.size > MAX) {
+    msg(`${f.name} is ${f.size.toLocaleString()} bytes; the drive holds images up to ${MAX.toLocaleString()}.`, 'bad');
     $('up').disabled = true;
     return;
   }

@@ -13,16 +13,16 @@
 
 #include "crc32.h"
 #include "store.h"
+#include "woz.h"
 
 #define STORE_OFFSET    (1u << 20)
 #define DIR_OFFSET(i)   (STORE_OFFSET + (uint32_t)(i) * FLASH_SECTOR_SIZE)
 #define SLOT_BASE       (STORE_OFFSET + 0x10000u)
-#define SLOT_SIZE       (256u * 1024u)
+#define SLOT_SIZE       IMAGE_MAX_SIZE
 #define SLOT_COUNT      ((PICO_FLASH_SIZE_BYTES - SLOT_BASE) / SLOT_SIZE)
 #define DIR_MAX         8
 #define DIR_MAGIC       0x56443241u     // "A2DV"
 #define DIR_VERSION     1
-#define FORMAT_DSK      1               // 140 KB DOS-order .dsk
 
 typedef struct {
     uint8_t  used;
@@ -46,12 +46,24 @@ typedef struct {
 
 static_assert(sizeof(dir_t) <= FLASH_SECTOR_SIZE, "directory must fit a sector");
 static_assert(SLOT_COUNT >= 2, "need at least two image spaces");
-static_assert(SLOT_COUNT <= 255, "slot index is a uint8_t");
+static_assert(SLOT_COUNT <= STORE_SLOTS_MAX, "avoid masks are 32 bits");
 
 static dir_t cur;               // live directory; swapped under the lwIP lock
 static int   cur_sector = -1;   // 0/1 = which copy holds cur, -1 = none valid
 static bool  cur_verified;
 static uint8_t secbuf[FLASH_SECTOR_SIZE] __attribute__((aligned(4)));
+
+// In-progress streaming write.
+static struct {
+    bool     active;
+    int      slot;
+    uint32_t off;           // flash offset of the image space
+    uint32_t size;          // announced total
+    uint32_t written;       // bytes accepted so far
+    uint32_t flushed;       // bytes already in flash (multiple of 4 KB)
+    uint32_t staged;        // bytes waiting in wbuf
+} wr;
+static uint8_t wbuf[FLASH_SECTOR_SIZE] __attribute__((aligned(4)));
 
 // ---------------------------------------------------------------- helpers
 
@@ -152,7 +164,18 @@ static bool dir_valid(const dir_t *d)
 static bool entry_sane(const dir_entry_t *e)
 {
     return e->used && e->slot < SLOT_COUNT && e->size > 0 &&
-           e->size <= SLOT_SIZE && memchr(e->name, 0, sizeof e->name);
+           e->size <= SLOT_SIZE && e->format >= FMT_DSK && e->format <= FMT_WOZ2 &&
+           memchr(e->name, 0, sizeof e->name);
+}
+
+const char *store_format_name(image_format_t f)
+{
+    switch (f) {
+    case FMT_DSK:  return "dsk";
+    case FMT_WOZ1: return "woz1";
+    case FMT_WOZ2: return "woz2";
+    default:       return "none";
+    }
 }
 
 static bool slot_in_use(const dir_t *d, unsigned slot)
@@ -217,6 +240,8 @@ bool store_image(image_info_t *out)
     const dir_entry_t *e = &cur.e[cur.current];
     memcpy(out->name, e->name, IMAGE_NAME_MAX);
     out->size = e->size;
+    out->format = (image_format_t)e->format;
+    out->slot = e->slot;
     memcpy(out->sha256, e->sha256, 32);
     out->uploaded = e->uploaded;
     out->verified = cur_verified;
@@ -224,20 +249,18 @@ bool store_image(image_info_t *out)
     return true;
 }
 
-int store_commit(const uint8_t *buf, uint32_t size, const char *name,
-                 int64_t uploaded, char *err, size_t errn)
+int store_write_begin(uint32_t size, uint32_t avoid_mask, char *err, size_t errn)
 {
-    if (size == 0 || size > SLOT_SIZE || size % FLASH_PAGE_SIZE) {
-        snprintf(err, errn, "bad image size %lu", (unsigned long)size);
+    if (size == 0 || size > SLOT_SIZE) {
+        snprintf(err, errn, "image must be 1 to %u bytes", (unsigned)SLOT_SIZE);
         return -1;
     }
-
     // Pick a free image space, rotating to spread flash wear.
     int cur_slot = cur.current >= 0 ? cur.e[cur.current].slot : -1;
     int slot = -1;
     for (int k = 1; k <= (int)SLOT_COUNT; k++) {
         int s = (cur_slot + k + (int)SLOT_COUNT) % (int)SLOT_COUNT;
-        if (!slot_in_use(&cur, (unsigned)s)) {
+        if (!slot_in_use(&cur, (unsigned)s) && !(avoid_mask & (1u << s))) {
             slot = s;
             break;
         }
@@ -246,16 +269,88 @@ int store_commit(const uint8_t *buf, uint32_t size, const char *name,
         snprintf(err, errn, "no free image space");
         return -1;
     }
+    memset(&wr, 0, sizeof wr);
+    wr.active = true;
+    wr.slot = slot;
+    wr.off = SLOT_BASE + (uint32_t)slot * SLOT_SIZE;
+    wr.size = size;
+    return 0;
+}
 
-    uint32_t off = SLOT_BASE + (uint32_t)slot * SLOT_SIZE;
-    uint32_t elen = (size + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1);
-    if (!flash_erase(off, elen) || !flash_program(off, buf, size)) {
-        snprintf(err, errn, "flash write failed (image space %d)", slot);
+// Erase the next sector and program the staged bytes (padded with FF to a
+// whole page), then read them back.
+static int flush_sector(char *err, size_t errn)
+{
+    uint32_t at = wr.off + wr.flushed;
+    size_t plen = (wr.staged + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1);
+    memset(wbuf + wr.staged, 0xFF, FLASH_SECTOR_SIZE - wr.staged);
+    if (!flash_erase(at, FLASH_SECTOR_SIZE) || !flash_program(at, wbuf, plen)) {
+        snprintf(err, errn, "flash write failed at 0x%lx", (unsigned long)at);
         return -1;
     }
-    const uint8_t *fl = slot_data((unsigned)slot);
-    if (memcmp(fl, buf, size) != 0) {
-        snprintf(err, errn, "flash read-back mismatch (image space %d)", slot);
+    if (memcmp((const void *)(XIP_BASE + at), wbuf, wr.staged) != 0) {
+        snprintf(err, errn, "flash read-back mismatch at 0x%lx", (unsigned long)at);
+        return -1;
+    }
+    wr.flushed += FLASH_SECTOR_SIZE;
+    wr.staged = 0;
+    return 0;
+}
+
+int store_write_chunk(const uint8_t *data, size_t n, char *err, size_t errn)
+{
+    if (!wr.active || n > wr.size - wr.written) {
+        snprintf(err, errn, "write past the announced size");
+        return -1;
+    }
+    while (n) {
+        size_t take = FLASH_SECTOR_SIZE - wr.staged;
+        if (take > n)
+            take = n;
+        memcpy(wbuf + wr.staged, data, take);
+        wr.staged += take;
+        wr.written += take;
+        data += take;
+        n -= take;
+        if (wr.staged == FLASH_SECTOR_SIZE && flush_sector(err, errn))
+            return -1;
+    }
+    return 0;
+}
+
+void store_write_abort(void)
+{
+    wr.active = false;      // the space holds junk but stays free in the directory
+}
+
+int store_write_finish(const char *name, int64_t uploaded, char *err, size_t errn)
+{
+    if (!wr.active) {
+        snprintf(err, errn, "no write in progress");
+        return -1;
+    }
+    wr.active = false;
+    if (wr.written != wr.size) {
+        snprintf(err, errn, "short image: %lu of %lu bytes",
+                 (unsigned long)wr.written, (unsigned long)wr.size);
+        return -1;
+    }
+    if (wr.staged && flush_sector(err, errn))
+        return -1;
+
+    // What did we get? WOZ is recognised by its signature; anything else
+    // must be exactly the size of a 16-sector .dsk.
+    const uint8_t *fl = slot_data((unsigned)wr.slot);
+    image_format_t fmt;
+    if (wr.size >= 4 && (memcmp(fl, "WOZ1", 4) == 0 || memcmp(fl, "WOZ2", 4) == 0)) {
+        woz_info_t wi;
+        if (woz_parse(fl, wr.size, &wi, err, errn))
+            return -1;
+        fmt = wi.version == 1 ? FMT_WOZ1 : FMT_WOZ2;
+    } else if (wr.size == DSK_SIZE) {
+        fmt = FMT_DSK;
+    } else {
+        snprintf(err, errn, "not a .dsk (exactly %u bytes) or a WOZ file", DSK_SIZE);
         return -1;
     }
 
@@ -268,15 +363,15 @@ int store_commit(const uint8_t *buf, uint32_t size, const char *name,
     nd.current = 0;
     dir_entry_t *e = &nd.e[0];
     e->used = 1;
-    e->slot = (uint8_t)slot;
-    e->format = FORMAT_DSK;
-    e->size = size;
+    e->slot = (uint8_t)wr.slot;
+    e->format = (uint16_t)fmt;
+    e->size = wr.size;
     e->uploaded = uploaded;
-    sha256_bytes(fl, size, e->sha256);          // hash what is actually stored
+    sha256_bytes(fl, wr.size, e->sha256);           // hash what is actually stored
     strncpy(e->name, name, IMAGE_NAME_MAX - 1);
     nd.crc = crc32(&nd, offsetof(dir_t, crc));
 
-    int ns = cur_sector == 0 ? 1 : 0;           // never overwrite the live copy
+    int ns = cur_sector == 0 ? 1 : 0;               // never overwrite the live copy
     memset(secbuf, 0xFF, sizeof secbuf);
     memcpy(secbuf, &nd, sizeof nd);
     size_t plen = (sizeof nd + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1);
@@ -298,7 +393,8 @@ int store_commit(const uint8_t *buf, uint32_t size, const char *name,
 
     char hex[65];
     sha256_hex(e->sha256, hex);
-    printf("store: wrote \"%s\" to image space %d, directory %c seq %lu, sha256 %s\n",
-           e->name, slot, ns ? 'B' : 'A', (unsigned long)nd.seq, hex);
+    printf("store: wrote \"%s\" (%s, %lu bytes) to image space %d, directory %c seq %lu, sha256 %s\n",
+           e->name, store_format_name(fmt), (unsigned long)e->size, wr.slot,
+           ns ? 'B' : 'A', (unsigned long)nd.seq, hex);
     return 0;
 }
