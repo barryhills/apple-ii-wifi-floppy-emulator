@@ -1,0 +1,7 @@
+build/
+*.uf2
+*.elf
+.DS_Store
+hardware/source/pcb/out*/
+__pycache__/
+firmware/config.json
