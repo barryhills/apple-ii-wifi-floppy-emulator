@@ -47,10 +47,15 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   only via JLCPCB's upload preview.
 - **Firmware:** milestone 0 **passed** 2026-11-13 (`firmware/blink/`). Full-flash
   pattern test deliberately skipped.
-- **Milestone 1** built and passing Claude's tests 2026-11-13 (`firmware/`,
-  v0.1-m1): joins WPA2, `a2drive.local` via mDNS (+ `_http._tcp` Bonjour),
-  `GET /status` JSON, `GET /` status page; 500 sequential + 200 parallel
-  requests clean. Awaiting Barry's acceptance test.
+- **Milestone 1 passed** 2026-11-13 (Barry: works after reboot). Committed
+  `8f45046` on branch `m1-wifi-http` (local only, no remote).
+- **Milestone 2 passed** 2026-11-13 (Barry: upload, download, power-cycle
+  persistence, image integrity). v0.2-m2, branch `m2-flash-storage`. Claude's tests:
+  web page upload/download of one .dsk; SHA-256 (RP2350 hardware) matches
+  `shasum`; byte-identical round trip; survives reboot (re-hashed at boot);
+  wrong size 400, no length 411, concurrent upload 409, aborted upload leaves
+  the stored image intact; 14 uploads rotate through all image spaces.
+  Next: milestone 3 (GCR encoder) and/or stored config + config page.
 
 ## Toolchain (Mac, Intel, native x86_64)
 
@@ -188,17 +193,37 @@ field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
 - HTTP server is our own on lwIP raw TCP (`src/http.c`), not lwIP httpd, which
   can't do PUT/DELETE.
 
-### HTTP API (draft, not final)
+### HTTP API (as built, v0.2-m2)
 
 | Request | Purpose |
 |---|---|
-| `PUT /slot/N?name=X` | upload image to slot N |
-| `GET /slot/N` | download slot N including the Apple's writes |
-| `DELETE /slot/N` | empty slot |
-| `GET /slots` | list directory |
-| `POST /mount/N` | mount slot N |
-| `GET /status` | mounted slot, head position, write-protect, uptime |
-| `PUT /config` | hostname, WiFi credentials, per-slot write-protect |
+| `GET /` | configurator page (`src/web/index.html`, embedded at build) |
+| `GET /status` | JSON: firmware, board, hostname, SSID, IP, RSSI, uptime, time, image {name, size, sha256, uploaded, verified} |
+| `PUT /image?name=X` | upload; body must be exactly 143,360 bytes; reply after the flash write+verify |
+| `GET /image` | download; `Content-Disposition` filename, `X-Image-SHA256` header |
+
+Later: `PUT /config`, and a list of images once the multi-image design is
+decided. **GUI vocabulary (decided 2026-11-13):** the image the drive serves
+is the **mounted** image, tag **M**; a writable image gets tag **W**. **Users
+never see the word "slot"** (it means Apple slot / drive to
+them). Internally, a 256 KB flash area is an "image space".
+
+### Flash layout (src/store.h)
+
+0–1 MB firmware (checked at boot) · 1 MB: image directory copies A/B (CRC32 +
+sequence number, alternate writes, newest valid wins) · +8 KB: reserved for
+stored config · 1 MB+64 KB to 4 MB: 11 image spaces of 256 KB. A new image
+goes to a free space, is read back, then the directory switches. Flash writes
+use `flash_safe_execute`, one 4 KB sector at a time. **When core 1 starts
+running the drive emulation it must call `flash_safe_execute_core_init()`**,
+and flash writes stall XIP, so core-1 code that runs during them must be in RAM.
+
+### Firmware notes
+
+- Main stack raised to 4 KB (`PICO_STACK_SIZE`): lwIP callbacks run in IRQ
+  context on it. Large scratch buffers are static; `status_json()` needs the
+  lwIP lock.
+- SNTP (`pool.ntp.org`) timestamps uploads; "unknown" until synced.
 
 ### Milestones
 

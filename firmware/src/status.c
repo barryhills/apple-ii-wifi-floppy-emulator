@@ -2,34 +2,21 @@
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
 
+#include "clock.h"
+#include "json.h"
 #include "net.h"
 #include "status.h"
+#include "store.h"
 
-// Copy s into out as JSON string content (no quotes). SSIDs may hold any
-// bytes: escape quote, backslash and control bytes (\u00XX); pass UTF-8 through.
-static void json_escape(char *out, size_t n, const char *s)
-{
-    size_t o = 0;
-    for (; *s && o + 6 < n; s++) {   // room for \u00XX + NUL
-        unsigned char ch = (unsigned char)*s;
-        if (ch == '"' || ch == '\\') {
-            out[o++] = '\\';
-            out[o++] = (char)ch;
-        } else if (ch < 0x20 || ch == 0x7f) {
-            o += (size_t)snprintf(out + o, n - o, "\\u%04x", ch);
-        } else {
-            out[o++] = (char)ch;
-        }
-    }
-    out[o] = 0;
-}
-
-// Disk fields are placeholders until the drive emulation exists:
-// mounted slot and head position are null, and the drive reports
-// write-protected until writes are implemented.
+// halftrack and write_protect are placeholders until the drive emulation
+// exists: no head position yet, and the drive reports write-protected until
+// writes are implemented.
+//
+// Scratch buffers are static to keep this off the (small) interrupt-time
+// stack, so callers must hold the lwIP lock (lwIP callbacks already do).
 size_t status_json(char *buf, size_t n)
 {
-    char ssid[32 * 6 + 1];      // worst case: 32 bytes, each \u00XX
+    static char ssid[32 * 6 + 1];
     json_escape(ssid, sizeof ssid, net_ssid());
 
     char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
@@ -40,12 +27,33 @@ size_t status_json(char *buf, size_t n)
     if (net_rssi(&r))
         snprintf(rssi, sizeof rssi, "%ld", (long)r);
 
+    char now[24] = "null";
+    int64_t t = clock_unix();
+    if (t)
+        snprintf(now, sizeof now, "%lld", (long long)t);
+
+    static char image[IMAGE_NAME_MAX * 6 + 200];
+    snprintf(image, sizeof image, "null");
+    image_info_t im;
+    if (store_image(&im)) {
+        static char name[IMAGE_NAME_MAX * 6];
+        char hex[65], up[24] = "null";
+        json_escape(name, sizeof name, im.name);
+        sha256_hex(im.sha256, hex);
+        if (im.uploaded)
+            snprintf(up, sizeof up, "%lld", (long long)im.uploaded);
+        snprintf(image, sizeof image,
+                 "{\"name\":\"%s\",\"size\":%lu,\"sha256\":\"%s\","
+                 "\"uploaded\":%s,\"verified\":%s}",
+                 name, (unsigned long)im.size, hex, up, im.verified ? "true" : "false");
+    }
+
     int len = snprintf(buf, n,
         "{\"firmware\":\"%s\",\"board_id\":\"%s\",\"hostname\":\"%s\","
         "\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi_dbm\":%s,\"uptime_s\":%llu,"
-        "\"mounted_slot\":null,\"halftrack\":null,\"write_protect\":true}\n",
+        "\"time\":%s,\"image\":%s,\"halftrack\":null,\"write_protect\":true}\n",
         A2DRIVE_VERSION, id, net_hostname(), ssid, net_ip_str(), rssi,
-        (unsigned long long)(time_us_64() / 1000000));
+        (unsigned long long)(time_us_64() / 1000000), now, image);
     if (len < 0)
         len = 0;
     if ((size_t)len >= n)

@@ -1,45 +1,78 @@
-// Minimal HTTP/1.0 server on lwIP's raw TCP API.
+// Small HTTP/1.1 server engine on lwIP's raw TCP API.
 //
-// One request per connection ("Connection: close"). The request head is
-// collected into a fixed buffer; the response is built in a malloc'd buffer
-// and fed to tcp_write() as send-buffer space allows, continuing from the
-// sent and poll callbacks. All callbacks run in the cyw43 async context with
-// the lwIP lock held.
+// Connection life cycle (one request per connection):
 //
-// Milestone 1 routes: GET / (HTML page) and GET /status (JSON). Request
-// bodies are ignored; streaming PUT uploads arrive with milestone 2.
+//   HEAD     collecting the request head (up to REQ_MAX bytes)
+//   BODY     streaming a request body into the handler's buffer
+//   DISCARD  draining a body nobody wanted (so the client reads our reply)
+//   HELD     body complete, waiting for a deferred response
+//   SEND     response queued; close once it is all handed to TCP
+//
+// The response is a malloc'd head plus a body that is either copied to the
+// heap or referenced in place (static data, flash). It is fed to tcp_write()
+// as send-buffer space allows, continuing from the sent and poll callbacks.
+// All callbacks run in the cyw43 async context with the lwIP lock held.
 
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "lwip/tcp.h"
 
 #include "http.h"
-#include "status.h"
 
 #define HTTP_PORT   80
 #define REQ_MAX     1024
-#define IDLE_POLLS  20      // tcp_poll interval 2 x 500 ms coarse ticks -> 20 s
+#define POLL_TICKS  2       // tcp_poll interval in 500 ms ticks -> 1 s
+#define IDLE_POLLS  20      // -> 20 s without progress closes the connection
 
-typedef struct {
+typedef enum { ST_HEAD, ST_BODY, ST_DISCARD, ST_HELD, ST_SEND } st_t;
+
+struct conn {
     struct tcp_pcb *pcb;
-    char   *out;            // response (NULL until the request head is in)
-    size_t  out_len, out_off;
-    uint16_t len;           // bytes in req
-    uint8_t idle;
-    bool    closing;        // tcp_close() failed for lack of memory; retry
-    char    req[REQ_MAX + 1];
-} conn_t;
+    st_t     st;
+    uint8_t  idle;
+    bool     closing;           // tcp_close() failed for lack of memory; retry
+
+    // request
+    uint16_t len;               // bytes in req
+    const char *method, *path, *query;
+    long     content_length;
+    bool     expect_continue;
+
+    // request body
+    uint8_t *body_dst;
+    size_t   body_len, body_got;
+    http_conn_fn body_done;
+    size_t   discard_left;
+
+    // response
+    bool     responded;
+    char    *head;
+    size_t   hlen, hoff;
+    const uint8_t *body;
+    size_t   blen, boff;
+    void    *body_heap;
+
+    http_conn_fn on_close;
+    char     req[REQ_MAX + 1];
+};
+
+static http_handler_t handler;
 
 static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err);
 static err_t on_sent(void *arg, struct tcp_pcb *pcb, u16_t len);
 static err_t on_poll(void *arg, struct tcp_pcb *pcb);
 static void  on_err(void *arg, err_t err);
 
+// ---------------------------------------------------------------- teardown
+
 static void conn_free(conn_t *c)
 {
-    free(c->out);
+    if (c->on_close)
+        c->on_close(c);
+    free(c->head);
+    free(c->body_heap);
     free(c);
 }
 
@@ -69,33 +102,53 @@ static err_t conn_close(conn_t *c)
         conn_free(c);
         return ERR_OK;
     }
-    c->closing = true;          // retry from on_poll
+    c->closing = true;
     tcp_arg(pcb, c);
     tcp_err(pcb, on_err);
-    tcp_poll(pcb, on_poll, 1);
+    tcp_poll(pcb, on_poll, POLL_TICKS);
     return ERR_OK;
 }
 
-// Queue as much of the response as fits; close once all of it is queued.
-// Returns ERR_ABRT if the connection was aborted (caller must pass it on).
+// ---------------------------------------------------------------- sending
+
+// Queue as much of the response as fits; close when all of it is queued
+// and the request side is finished. Returns ERR_ABRT if aborted.
 static err_t conn_push(conn_t *c)
 {
-    while (c->out_off < c->out_len) {
-        size_t n = c->out_len - c->out_off;
-        u16_t room = tcp_sndbuf(c->pcb);
-        if (room == 0)
+    if (!c->responded)
+        return ERR_OK;
+    for (;;) {
+        const uint8_t *src;
+        size_t left;
+        bool in_head = c->hoff < c->hlen;
+        if (in_head) {
+            src = (const uint8_t *)c->head + c->hoff;
+            left = c->hlen - c->hoff;
+        } else if (c->boff < c->blen) {
+            src = c->body + c->boff;
+            left = c->blen - c->boff;
+        } else {
             break;
-        if (n > room)
-            n = room;
-        err_t e = tcp_write(c->pcb, c->out + c->out_off, (u16_t)n, TCP_WRITE_FLAG_COPY);
+        }
+        size_t n = tcp_sndbuf(c->pcb);
+        if (n == 0)
+            break;
+        if (n > left)
+            n = left;
+        err_t e;
+        while ((e = tcp_write(c->pcb, src, (u16_t)n, TCP_WRITE_FLAG_COPY)) == ERR_MEM && n > 512)
+            n /= 2;             // heap tight: try a smaller piece
         if (e == ERR_MEM)
             break;              // resume from on_sent / on_poll
         if (e != ERR_OK)
             return conn_abort(c);
-        c->out_off += n;
+        if (in_head)
+            c->hoff += n;
+        else
+            c->boff += n;
     }
     tcp_output(c->pcb);
-    if (c->out_off == c->out_len)
+    if (c->st == ST_SEND && c->hoff == c->hlen && c->boff == c->blen)
         return conn_close(c);
     return ERR_OK;
 }
@@ -107,129 +160,283 @@ static const char *reason(int code)
     case 400: return "Bad Request";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
+    case 409: return "Conflict";
+    case 411: return "Length Required";
+    case 413: return "Content Too Large";
     case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
+    case 501: return "Not Implemented";
     default:  return "";
     }
 }
 
-// Build the full response (head + body) in c->out.
-static void respond(conn_t *c, int code, const char *ctype,
-                    const char *body, size_t blen, const char *extra_hdr)
+void http_respond(conn_t *c, int code, const char *ctype, const void *body,
+                  size_t len, bool copy_body, const char *extra_headers)
 {
-    char head[256];
-    int hlen = snprintf(head, sizeof head,
-        "HTTP/1.0 %d %s\r\n"
+    if (c->responded)
+        return;
+    c->responded = true;
+    c->head = malloc(512);
+    if (!c->head)
+        return;                 // nothing to send; the connection just closes
+    int n = snprintf(c->head, 512,
+        "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %u\r\n"
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
         "%s"
         "\r\n",
-        code, reason(code), ctype, (unsigned)blen, extra_hdr ? extra_hdr : "");
-    c->out = malloc((size_t)hlen + blen);
-    if (!c->out) {
-        c->out_len = 0;         // nothing to send; conn_push just closes
+        code, reason(code), ctype, (unsigned)len, extra_headers ? extra_headers : "");
+    if (n < 0 || n >= 512) {
+        free(c->head);
+        c->head = NULL;
         return;
     }
-    memcpy(c->out, head, (size_t)hlen);
-    memcpy(c->out + hlen, body, blen);
-    c->out_len = (size_t)hlen + blen;
-    c->out_off = 0;
+    c->hlen = (size_t)n;
+    if (len && copy_body) {
+        c->body_heap = malloc(len);
+        if (!c->body_heap) {
+            c->hlen = 0;
+            return;
+        }
+        memcpy(c->body_heap, body, len);
+        body = c->body_heap;
+    }
+    c->body = body;
+    c->blen = len;
 }
 
-static void respond_text(conn_t *c, int code, const char *msg)
+void http_respond_text(conn_t *c, int code, const char *msg)
 {
-    respond(c, code, "text/plain; charset=utf-8", msg, strlen(msg),
-            code == 405 ? "Allow: GET\r\n" : NULL);
+    http_respond(c, code, "text/plain; charset=utf-8", msg, strlen(msg), false, NULL);
 }
 
-static const char index_html[] =
-"<!doctype html><html><head><meta charset=utf-8>"
-"<meta name=viewport content='width=device-width,initial-scale=1'>"
-"<title>a2drive</title><style>"
-":root{color-scheme:light dark}"
-"body{font:15px -apple-system,system-ui,sans-serif;margin:2em auto;max-width:36em;padding:0 1em}"
-"h1{font-size:1.3em}table{border-collapse:collapse}"
-"td{padding:.25em 1em .25em 0;vertical-align:top}td:first-child{opacity:.6}"
-"#err{color:#c33}"
-"</style></head><body>"
-"<h1>a2drive &mdash; WiFi Disk II</h1>"
-"<table id=t></table><p id=err></p>"
-"<script>"
-"async function tick(){try{"
-"const s=await (await fetch('/status',{cache:'no-store'})).json();"
-"const t=document.getElementById('t');t.replaceChildren();"
-"for(const[k,v]of Object.entries(s)){const r=t.insertRow();"
-"r.insertCell().textContent=k;r.insertCell().textContent=v===null?'\\u2014':String(v)}"
-"document.getElementById('err').textContent=''"
-"}catch(e){document.getElementById('err').textContent='no response: '+e}}"
-"tick();setInterval(tick,2000);"
-"</script></body></html>";
-
-static void handle_request(conn_t *c)
+void http_respond_deferred(conn_t *c, int code, const char *ctype,
+                           const void *body, size_t len)
 {
-    // Request line: METHOD SP TARGET SP VERSION
+    http_respond(c, code, ctype, body, len, true, NULL);
+    if (c->st == ST_HELD)
+        c->st = ST_SEND;
+    conn_push(c);
+}
+
+// ---------------------------------------------------------------- request
+
+const char *http_method(const conn_t *c)   { return c->method; }
+const char *http_path(const conn_t *c)     { return c->path; }
+long http_content_length(const conn_t *c)  { return c->content_length; }
+
+void http_set_on_close(conn_t *c, http_conn_fn fn) { c->on_close = fn; }
+
+void http_receive_body(conn_t *c, uint8_t *dst, size_t len, http_conn_fn done)
+{
+    c->body_dst = dst;
+    c->body_len = len;
+    c->body_got = 0;
+    c->body_done = done;
+}
+
+static int hexval(char ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+static void url_decode(char *out, size_t n, const char *s, size_t len)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < len && o + 1 < n; i++) {
+        char ch = s[i];
+        if (ch == '+') {
+            ch = ' ';
+        } else if (ch == '%' && i + 2 < len && hexval(s[i + 1]) >= 0 && hexval(s[i + 2]) >= 0) {
+            ch = (char)(hexval(s[i + 1]) * 16 + hexval(s[i + 2]));
+            i += 2;
+        }
+        out[o++] = ch;
+    }
+    out[o] = 0;
+}
+
+bool http_query_param(const conn_t *c, const char *key, char *out, size_t n)
+{
+    size_t kl = strlen(key);
+    for (const char *q = c->query; q && *q; ) {
+        const char *amp = strchr(q, '&');
+        size_t seg = amp ? (size_t)(amp - q) : strlen(q);
+        if (seg > kl && q[kl] == '=' && strncmp(q, key, kl) == 0) {
+            url_decode(out, n, q + kl + 1, seg - kl - 1);
+            return true;
+        }
+        q = amp ? amp + 1 : NULL;
+    }
+    return false;
+}
+
+// Split the head in place. head_len includes the final blank line.
+static bool parse_head(conn_t *c, size_t head_len)
+{
+    char *eol = strstr(c->req, "\r\n");
+    *eol = 0;
     char *method = c->req;
     char *sp1 = strchr(method, ' ');
-    if (!sp1) { respond_text(c, 400, "bad request line\n"); return; }
+    if (!sp1)
+        return false;
     *sp1 = 0;
     char *target = sp1 + 1;
-    char *sp2 = strpbrk(target, " \r");
-    if (!sp2) { respond_text(c, 400, "bad request line\n"); return; }
+    char *sp2 = strchr(target, ' ');
+    if (!sp2)
+        return false;
     *sp2 = 0;
     char *query = strchr(target, '?');
     if (query)
         *query++ = 0;
+    c->method = method;
+    c->path = target;
+    c->query = query ? query : "";
 
-    bool is_get = strcmp(method, "GET") == 0;
+    c->content_length = -1;
+    char *h = eol + 2;
+    char *end = c->req + head_len - 2;          // the blank line's CRLF
+    while (h < end) {
+        char *e = strstr(h, "\r\n");
+        if (!e)
+            break;
+        *e = 0;
+        char *colon = strchr(h, ':');
+        if (colon) {
+            *colon = 0;
+            char *v = colon + 1;
+            while (*v == ' ' || *v == '\t')
+                v++;
+            if (strcasecmp(h, "Content-Length") == 0) {
+                char *ep;
+                long n = strtol(v, &ep, 10);
+                if (ep == v || n < 0)
+                    return false;
+                c->content_length = n;
+            } else if (strcasecmp(h, "Expect") == 0 && strcasecmp(v, "100-continue") == 0) {
+                c->expect_continue = true;
+            }
+        }
+        h = e + 2;
+    }
+    return true;
+}
 
-    if (strcmp(target, "/") == 0 || strcmp(target, "/index.html") == 0) {
-        if (!is_get) { respond_text(c, 405, "GET only\n"); return; }
-        respond(c, 200, "text/html; charset=utf-8",
-                index_html, sizeof index_html - 1, NULL);
-    } else if (strcmp(target, "/status") == 0) {
-        if (!is_get) { respond_text(c, 405, "GET only\n"); return; }
-        char body[STATUS_JSON_MAX];
-        size_t n = status_json(body, sizeof body);
-        respond(c, 200, "application/json", body, n, NULL);
-    } else {
-        respond_text(c, 404, "not found\n");
+// Consume request-body bytes according to the current state.
+static void feed(conn_t *c, const uint8_t *d, size_t n)
+{
+    if (n == 0)
+        return;
+    if (c->st == ST_BODY) {
+        size_t take = c->body_len - c->body_got;
+        if (take > n)
+            take = n;
+        memcpy(c->body_dst + c->body_got, d, take);
+        c->body_got += take;
+        if (c->body_got == c->body_len) {
+            c->st = ST_HELD;
+            c->body_done(c);
+            if (c->responded)
+                c->st = ST_SEND;
+        }
+    } else if (c->st == ST_DISCARD) {
+        size_t take = c->discard_left < n ? c->discard_left : n;
+        c->discard_left -= take;
+        if (c->discard_left == 0)
+            c->st = ST_SEND;
     }
 }
+
+static void feed_pbuf(conn_t *c, const struct pbuf *p, size_t off)
+{
+    for (const struct pbuf *q = p; q; q = q->next) {
+        if (off >= q->len) {
+            off -= q->len;
+            continue;
+        }
+        feed(c, (const uint8_t *)q->payload + off, q->len - off);
+        off = 0;
+    }
+}
+
+// Head is complete: dispatch, then set up the body phase.
+static void start_request(conn_t *c, size_t head_len)
+{
+    if (!parse_head(c, head_len)) {
+        http_respond_text(c, 400, "bad request\n");
+        c->st = ST_SEND;
+        return;
+    }
+    handler(c);
+
+    if (c->body_dst && !c->responded) {
+        c->st = ST_BODY;
+        if (c->expect_continue)
+            tcp_write(c->pcb, "HTTP/1.1 100 Continue\r\n\r\n", 25, TCP_WRITE_FLAG_COPY);
+        return;
+    }
+    if (!c->responded)
+        http_respond_text(c, 500, "no response\n");
+    if (c->content_length > 0 && !c->expect_continue) {
+        c->st = ST_DISCARD;     // read it all so the client sees our reply
+        c->discard_left = (size_t)c->content_length;
+    } else {
+        c->st = ST_SEND;
+    }
+}
+
+// ---------------------------------------------------------------- callbacks
 
 static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 {
     conn_t *c = arg;
     (void)err;
 
-    if (!p) {                   // peer closed its side
-        if (c)
-            return conn_close(c);
-        tcp_close(pcb);
-        return ERR_OK;
+    if (!p) {                                   // peer finished sending
+        if (!c) {
+            tcp_close(pcb);
+            return ERR_OK;
+        }
+        if (c->st == ST_SEND || c->st == ST_HELD)
+            return ERR_OK;                      // still owe a reply
+        return conn_close(c);
     }
     tcp_recved(pcb, p->tot_len);
-    if (!c || c->out || c->closing) {   // not reading (body ignored for now)
+    if (!c || c->closing) {
         pbuf_free(p);
         return ERR_OK;
     }
-
-    uint16_t room = REQ_MAX - c->len;
-    uint16_t n = p->tot_len < room ? p->tot_len : room;
-    pbuf_copy_partial(p, c->req + c->len, n, 0);
-    c->len += n;
-    c->req[c->len] = 0;
-    pbuf_free(p);
     c->idle = 0;
 
-    if (strstr(c->req, "\r\n\r\n"))
-        handle_request(c);
-    else if (c->len == REQ_MAX)
-        respond_text(c, 431, "request head too large\n");
-    else
-        return ERR_OK;          // need more
-
+    if (c->st == ST_HEAD) {
+        uint16_t room = REQ_MAX - c->len;
+        uint16_t n = p->tot_len < room ? p->tot_len : room;
+        pbuf_copy_partial(p, c->req + c->len, n, 0);
+        c->len += n;
+        c->req[c->len] = 0;
+        char *end = strstr(c->req, "\r\n\r\n");
+        if (!end) {
+            pbuf_free(p);
+            if (c->len < REQ_MAX)
+                return ERR_OK;                  // need more
+            http_respond_text(c, 431, "request head too large\n");
+            c->st = ST_SEND;
+            return conn_push(c);
+        }
+        size_t head_len = (size_t)(end + 4 - c->req);
+        size_t extra = c->len - head_len;       // body bytes already copied
+        start_request(c, head_len);
+        feed(c, (const uint8_t *)c->req + head_len, extra);
+        feed_pbuf(c, p, n);                     // the part not copied
+    } else {
+        feed_pbuf(c, p, 0);
+    }
+    pbuf_free(p);
     return conn_push(c);
 }
 
@@ -237,7 +444,7 @@ static err_t on_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
 {
     conn_t *c = arg;
     (void)pcb; (void)len;
-    if (!c || c->closing || !c->out)
+    if (!c || c->closing)
         return ERR_OK;
     c->idle = 0;
     return conn_push(c);
@@ -252,11 +459,9 @@ static err_t on_poll(void *arg, struct tcp_pcb *pcb)
     }
     if (c->closing)
         return conn_close(c);
-    if (++c->idle >= IDLE_POLLS)
+    if (c->st != ST_HELD && ++c->idle >= IDLE_POLLS)
         return conn_abort(c);
-    if (c->out)
-        return conn_push(c);
-    return ERR_OK;
+    return conn_push(c);
 }
 
 static void on_err(void *arg, err_t err)
@@ -277,16 +482,18 @@ static err_t on_accept(void *arg, struct tcp_pcb *pcb, err_t err)
         return ERR_ABRT;
     }
     c->pcb = pcb;
+    c->content_length = -1;
     tcp_arg(pcb, c);
     tcp_recv(pcb, on_recv);
     tcp_sent(pcb, on_sent);
     tcp_err(pcb, on_err);
-    tcp_poll(pcb, on_poll, 2);
+    tcp_poll(pcb, on_poll, POLL_TICKS);
     return ERR_OK;
 }
 
-void http_init(void)
+void http_init(http_handler_t h)
 {
+    handler = h;
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!pcb) {
         printf("http: tcp_new failed\n");

@@ -54,6 +54,13 @@
 #define LWIP_NUM_NETIF_CLIENT_DATA      1
 #define MEMP_NUM_SYS_TIMEOUT            (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 8)
 
+// SNTP (upload timestamps). DHCP, DNS, mDNS and SNTP each use a UDP PCB.
+#include <stdint.h>
+void clock_set_unix(uint32_t sec);
+#define SNTP_SERVER_DNS                 1
+#define SNTP_SET_SYSTEM_TIME(sec)       clock_set_unix((uint32_t)(sec))
+#define MEMP_NUM_UDP_PCB                6
+
 #define MEM_STATS                       0
 #define SYS_STATS                       0
 #define MEMP_STATS                      0

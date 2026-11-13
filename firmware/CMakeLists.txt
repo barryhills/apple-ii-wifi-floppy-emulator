@@ -57,23 +57,46 @@ endforeach()
 configure_file(src/config_defaults.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/config_defaults.h @ONLY)
 
 # ---------------------------------------------------------------------------
+# Embed src/web/index.html as a C array (re-run on change).
+# ---------------------------------------------------------------------------
+set(HTML_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/web/index.html)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${HTML_SRC})
+file(READ ${HTML_SRC} _html_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _html_arr "${_html_hex}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/index_html.c
+    "// Generated from src/web/index.html. Do not edit.\n"
+    "const unsigned char index_html[] = {${_html_arr}};\n"
+    "const unsigned int index_html_len = sizeof index_html;\n")
+
+# ---------------------------------------------------------------------------
 add_executable(a2drive
     src/main.c
     src/net.c
     src/http.c
+    src/api.c
+    src/store.c
+    src/clock.c
+    src/json.c
     src/status.c
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/index_html.c
 )
 target_include_directories(a2drive PRIVATE
     src                                        # lwipopts.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated      # config_defaults.h
 )
 target_compile_options(a2drive PRIVATE -Wall -Wextra)
-target_compile_definitions(a2drive PRIVATE A2DRIVE_VERSION="0.1-m1")
+target_compile_definitions(a2drive PRIVATE
+    A2DRIVE_VERSION="0.2-m2"
+    PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
+)
 target_link_libraries(a2drive
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
     pico_lwip_mdns
+    pico_lwip_sntp
     pico_unique_id
+    pico_flash
+    pico_sha256
 )
 
 pico_enable_stdio_usb(a2drive 1)

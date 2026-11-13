@@ -1,5 +1,5 @@
 // WiFi station management: connect, watch the link, reconnect with backoff.
-// Also brings up mDNS (<hostname>.local, _http._tcp) and the HTTP server.
+// Also brings up mDNS (<hostname>.local, _http._tcp), SNTP and the HTTP API.
 
 #include <stdio.h>
 #include "pico/cyw43_arch.h"
@@ -9,7 +9,8 @@
 
 #include "config_defaults.h"
 #include "net.h"
-#include "http.h"
+#include "api.h"
+#include "clock.h"
 
 #define CONNECT_TIMEOUT_MS  30000
 #define RETRY_DELAY_MS       5000
@@ -65,7 +66,8 @@ void net_init(void)
     mdns_resp_add_netif(sta_netif(), cfg_hostname);
     mdns_resp_add_service(sta_netif(), cfg_hostname, "_http", DNSSD_PROTO_TCP,
                           80, mdns_txt, NULL);
-    http_init();
+    api_init();
+    clock_start();
     cyw43_arch_lwip_end();
 
     state = NET_START;

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>a2drive</title>
+<style>
+:root{--bg:#f6f6f3;--fg:#1d1d1f;--mut:#6e6e73;--card:#fff;--line:#e2e2de;--acc:#2a62d8;--ok:#1a7f37;--bad:#c62828}
+@media (prefers-color-scheme:dark){:root{--bg:#161617;--fg:#f2f2f2;--mut:#9a9aa0;--card:#1f1f21;--line:#333336;--acc:#5b8cff;--ok:#3fb950;--bad:#ff6b6b}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:640px;margin:0 auto}
+h1{font-size:20px;margin:0 0 16px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 10px;font-weight:600}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:0}
+dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px}
+button,.btn{font:inherit;padding:6px 14px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+progress{width:100%;margin-top:12px}
+#msg{margin-top:10px;min-height:1.4em;overflow-wrap:anywhere}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+</style>
+</head>
+<body>
+<main>
+<h1>a2drive &mdash; WiFi Disk II</h1>
+
+<section>
+<h2>Disk image</h2>
+<dl id="img"><dt>Image</dt><dd>&hellip;</dd></dl>
+<div class="row"><a class="btn" id="dl" href="/image" download hidden>Download</a></div>
+<div class="row">
+<input type="file" id="file" accept=".dsk,.do">
+<button class="primary" id="up" disabled>Upload</button>
+</div>
+<progress id="prog" max="1" value="0" hidden></progress>
+<div id="msg"></div>
+</section>
+
+<section>
+<h2>Device</h2>
+<dl id="dev"></dl>
+</section>
+<p id="err" class="bad"></p>
+</main>
+
+<script>
+const DSK = 143360, $ = id => document.getElementById(id);
+let busy = false;
+
+function rows(el, pairs) {
+  el.replaceChildren();
+  for (const [k, v, cls] of pairs) {
+    const dt = document.createElement('dt'), dd = document.createElement('dd');
+    dt.textContent = k; dd.textContent = v;
+    if (cls) dd.className = cls;
+    el.append(dt, dd);
+  }
+}
+const when = t => t ? new Date(t * 1000).toLocaleString() : 'unknown (clock not set)';
+function dur(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60;
+  return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm ' + (s % 60) + 's';
+}
+function msg(t, cls) { $('msg').textContent = t; $('msg').className = cls || ''; }
+
+async function tick() {
+  try {
+    const s = await (await fetch('/status', {cache: 'no-store'})).json();
+    const im = s.image;
+    if (im) {
+      rows($('img'), [
+        ['Name', im.name],
+        ['Size', im.size.toLocaleString() + ' bytes'],
+        ['SHA-256', im.sha256, 'mono'],
+        ['Uploaded', when(im.uploaded)],
+        ['Flash check', im.verified ? 'OK' : 'MISMATCH', im.verified ? 'ok' : 'bad'],
+      ]);
+      $('dl').hidden = false;
+      $('dl').setAttribute('download', im.name);
+    } else {
+      rows($('img'), [['Image', 'none stored']]);
+      $('dl').hidden = true;
+    }
+    rows($('dev'), [
+      ['Hostname', s.hostname + '.local'],
+      ['WiFi', s.ssid],
+      ['IP', s.ip || '—'],
+      ['Signal', s.rssi_dbm == null ? '—' : s.rssi_dbm + ' dBm'],
+      ['Uptime', dur(s.uptime_s)],
+      ['Firmware', s.firmware],
+      ['Board', s.board_id, 'mono'],
+    ]);
+    $('err').textContent = '';
+  } catch (e) {
+    $('err').textContent = 'No response from the drive: ' + e.message;
+  }
+}
+
+$('file').onchange = () => {
+  const f = $('file').files[0];
+  msg('');
+  if (!f) { $('up').disabled = true; return; }
+  if (f.size !== DSK) {
+    msg(`${f.name} is ${f.size.toLocaleString()} bytes; a .dsk image must be exactly ${DSK.toLocaleString()}.`, 'bad');
+    $('up').disabled = true;
+    return;
+  }
+  $('up').disabled = busy;
+};
+
+function done() {
+  busy = false;
+  $('prog').hidden = true;
+  $('up').disabled = !$('file').files[0];
+  tick();
+}
+
+$('up').onclick = () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  busy = true; $('up').disabled = true;
+  const x = new XMLHttpRequest();
+  x.open('PUT', '/image?name=' + encodeURIComponent(f.name));
+  $('prog').hidden = false; $('prog').value = 0;
+  msg('Uploading…');
+  x.upload.onprogress = e => { if (e.lengthComputable) $('prog').value = e.loaded / e.total; };
+  x.upload.onload = () => msg('Writing to flash…');
+  x.onload = () => {
+    let r = {};
+    try { r = JSON.parse(x.responseText); } catch {}
+    if (x.status === 200 && r.ok) msg(`Stored ${r.name} — SHA-256 ${r.sha256}`, 'ok');
+    else msg('Upload failed: ' + (r.error || x.responseText || 'HTTP ' + x.status), 'bad');
+    done();
+  };
+  x.onerror = () => { msg('Upload failed: connection error', 'bad'); done(); };
+  x.send(f);
+};
+
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>
