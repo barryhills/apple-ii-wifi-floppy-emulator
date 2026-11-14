@@ -150,6 +150,23 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   Rigol scope on GP10 shows 1 us low pulses 4 us apart, 3.3 V. Bench jumper
   is **physical pin 14 (GP10) -> pin 11 (GP8)**. Barry speaks physical pin
   numbers: give pin numbers first.
+- **PAUSE POINT 2026-11-14 (after milestone 4).** Barry's direction: **no
+  synthetic workloads** for milestone 5; the first test is the real //e
+  through the buffered interface (U1/U2 make that safe). Waiting on the rev
+  B boards and parts. Barry may breadboard U1/U2 first: male Dupont jumper
+  pins push straight into his female ribbon-cable sockets, 11 wires (pins
+  2/4/6/8 phases, 10 WRREQ*, 14 ENABLE*, 16 RDDATA, 18 WRDATA, 20 WRPROT,
+  11 +5V, 1 GND); **leave pins 9, 13, 15, 17, 19 (+/-12 V) empty**; meter
+  pin 1 = GND and pin 11 = +5 V before plugging into the //e.
+  **Milestone 5 firmware to write (on Barry's go, tested first on the //e):**
+  core 1 loop (ENABLE*, phase lines -> half-track, repoint the player;
+  shares nothing with core 0, runs from RAM since flash writes stall XIP;
+  call `flash_safe_execute_core_init()`); encode the whole .dsk at mount
+  (35 x ~6.3 KB, ~220 KB RAM) so a head step is only a DMA repoint, WOZ
+  tracks looked up; ENABLE* gating; WRPROT on GP11 (protected until
+  milestone 6). Open: RDDATA pulse sense on the real controller (idle high
+  chosen); new track starts at cell 0 (fine for DOS; angular position is a
+  later WOZ-fidelity item); writes need edge resync (//e cell ~3.958 us).
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
