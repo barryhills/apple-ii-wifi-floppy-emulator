@@ -162,6 +162,17 @@ static unsigned buttons_poll(void)
 {
     unsigned ev = 0;
     uint64_t now = time_us_64();
+    static bool started;
+    if (!started) {
+        // Keys already held at boot (UP+DOWN for setup mode) count as down,
+        // so they produce no press until released and pressed again.
+        started = true;
+        for (int i = 0; i < B_N; i++) {
+            btn_raw[i] = btn_down[i] = !gpio_get(btn_pin[i]);
+            btn_repeat[i] = at_the_end_of_time;     // and no auto-repeat either
+        }
+        return 0;
+    }
     for (int i = 0; i < B_N; i++) {
         bool raw = !gpio_get(btn_pin[i]);          // active low
         if (raw != btn_raw[i]) {

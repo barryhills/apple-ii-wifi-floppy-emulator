@@ -35,6 +35,7 @@ dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 #setform label{display:grid;grid-template-columns:110px 1fr auto;align-items:center;gap:8px;color:var(--mut);font-size:14px}
 #setform input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;min-width:0}
 #setform .hint{color:var(--mut)}
+#setform .show{display:flex;align-items:center;gap:4px;font-size:13px}
 #devmsg{margin-top:10px;min-height:1.4em;overflow-wrap:anywhere}
 </style>
 </head>
@@ -65,10 +66,10 @@ The drive restarts and joins it.</p>
 <form id="setform" autocomplete="off">
   <label>Hostname<input id="f_host" maxlength="63" spellcheck="false"><span class="hint">.local</span></label>
   <label>WiFi network<input id="f_ssid" maxlength="32" spellcheck="false"></label>
-  <label>Password<input id="f_pw" type="password" maxlength="63" placeholder="leave blank to keep the current one" autocomplete="new-password"></label>
+  <label>Password<input id="f_pw" type="password" maxlength="63" placeholder="leave blank to keep the current one" autocomplete="new-password"><span class="show"><input type="checkbox" id="f_show">Show</span></label>
 </form>
 <div class="buttons">
-  <button id="setsave" type="submit" form="setform">Save</button>
+  <button id="setsave" type="button">Save</button>
   <button id="restart">Restart</button>
   <button id="setcancel">Cancel</button>
 </div>
@@ -79,7 +80,7 @@ The drive restarts and joins it.</p>
 
 <script>
 const DSK = 143360, MAX = 262144, ROWS = 10, $ = id => document.getElementById(id);
-let rows = Array(ROWS).fill(null), mounted = 0, sel = 0, busy = false;
+let rows = Array(ROWS).fill(null), mounted = 0, sel = 0, busy = false, setupMode = false;
 
 const typeLong = {dsk: 'DSK', woz1: 'WOZ 1', woz2: 'WOZ 2'};
 const when = t => t ? new Date(t * 1000).toLocaleString() : 'upload time unknown';
@@ -140,6 +141,7 @@ async function refresh() {
       ['Last reset', s.last_reset], ['Stack headroom', s.stack_free + ' bytes'],
     ].flatMap(([k, v]) => [el('dt', k), el('dd', v)]));
     $('err').textContent = '';
+    setupMode = !!s.setup_mode;
     if (s.setup_mode && $('setupnote').hidden) {
       $('setupnote').hidden = false;
       $('setupnote').scrollIntoView();
@@ -285,11 +287,19 @@ function formChanged() {
 }
 
 ['f_host', 'f_ssid', 'f_pw'].forEach(id => $(id).oninput = formChanged);
+$('f_show').onchange = () => { $('f_pw').type = $('f_show').checked ? 'text' : 'password'; };
+
+// Return moves to the next field; only the Save button saves.
+$('setform').onsubmit = e => e.preventDefault();
+['f_host', 'f_ssid', 'f_pw'].forEach((id, i, a) => $(id).onkeydown = e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  (i + 1 < a.length ? $(a[i + 1]) : $('setsave')).focus();
+});
 
 $('setcancel').onclick = () => { devmsg(''); loadSettings(); };
 
-$('setform').onsubmit = async e => {
-  e.preventDefault();
+$('setsave').onclick = async () => {
   const host = $('f_host').value.trim().toLowerCase(), ssid = $('f_ssid').value, pw = $('f_pw').value;
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(host))
     return devmsg('Hostname: 1 to 63 of a-z, 0-9 and "-", not starting or ending with "-".', 'bad');
@@ -297,8 +307,7 @@ $('setform').onsubmit = async e => {
     return devmsg('WiFi network name: 1 to 32 characters.', 'bad');
   if (pw && (pw.length < 8 || pw.length > 63))
     return devmsg('Password: 8 to 63 characters (or blank to keep the current one).', 'bad');
-  if (!confirm(`The drive will restart and join "${ssid}" as ${host}.local.\n\n` +
-               'If it cannot connect within about 2 minutes, it falls back to the built-in network for that start.'))
+  if (!confirm(`Save these settings? The drive will restart and join "${ssid}" as ${host}.local.`))
     return;
   busy = true; render();
   try {
@@ -313,9 +322,20 @@ $('setform').onsubmit = async e => {
       busy = false; render();
       return devmsg('Not saved: ' + (r.error || text.trim() || 'HTTP ' + res.status), 'bad');
     }
-    if (host !== location.hostname.replace(/\.local$/, '')) {
+    // What the user has to do next depends on where the drive is going.
+    const url = `http://${host}.local/`;
+    const ssidChanged = ssid !== current.ssid;
+    if (setupMode || ssidChanged)
+      alert(`Saved. The drive is restarting and will join the WiFi network "${ssid}".\n\n` +
+            `Next: set your Mac's WiFi to "${ssid}"` + (setupMode ? ' (leave a2drive-setup)' : '') +
+            `, then open ${url} in about 20 seconds.\n\n` +
+            'If the drive cannot join, it returns to setup mode within about 2 minutes: ' +
+            'join a2drive-setup again and check the network name and password.');
+    else if (host !== location.hostname.replace(/\.local$/, ''))
+      alert(`Saved. The drive is restarting with its new name.\n\nIn about 20 seconds open ${url}`);
+    if (setupMode || ssidChanged || host !== location.hostname.replace(/\.local$/, '')) {
       $('devmsg').replaceChildren('Saved. The drive is restarting; in about 20 seconds open ',
-        Object.assign(document.createElement('a'), {href: `http://${host}.local/`, textContent: `http://${host}.local/`}), '.');
+        Object.assign(document.createElement('a'), {href: url, textContent: url}), '.');
       return;
     }
     waitForRestart('Saved. Restarting\u2026');

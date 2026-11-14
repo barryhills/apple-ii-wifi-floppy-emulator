@@ -129,6 +129,11 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   mode / SSID: a2drive-setup / Password: none / http://192.168.4.1". No DNS
   server (type the IP). macOS lists the SSID under "Other Networks", and
   can take a few seconds to show it.
+  v0.10.1 (Barry passed 2026-11-14): keys held at boot are ignored until
+  released (no picker on entering setup); settings form has a Show
+  checkbox for the password; Return moves to the next field, only the Save
+  button saves (after a confirm); after Save an alert says what to do next
+  (switch the Mac to the new network / open the new hostname).
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
