@@ -21,17 +21,22 @@ section{background:var(--card);border:1px solid var(--line);border-radius:10px;p
 .row .num{text-align:right;font-variant-numeric:tabular-nums}
 .row.empty .name{color:var(--mut);font-weight:400}
 .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#detail{color:var(--mut);font-size:13px;margin:10px 8px 0;min-height:1.4em;overflow-wrap:anywhere}
+#detail{color:var(--mut);font-size:13px;margin:12px 2px 0;min-height:1.4em;overflow-wrap:anywhere}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
-.buttons{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
-button{font:inherit;font-weight:600;padding:8px 18px;border-radius:9px;border:1px solid var(--acc);
-       background:var(--acc);color:var(--bg);cursor:pointer}
+.buttons{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}
+button{font:inherit;font-size:13px;font-weight:600;padding:5px 10px;border-radius:7px;border:1px solid var(--acc);
+       background:var(--acc);color:var(--bg);cursor:pointer;white-space:nowrap}
 button:disabled{opacity:.35;cursor:default}
 progress{width:100%;margin-top:12px}
 #msg{margin-top:10px;min-height:1.4em;overflow-wrap:anywhere}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:0}
 dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
+#setform{margin-top:14px;display:grid;gap:8px}
+#setform label{display:grid;grid-template-columns:110px 1fr auto;align-items:center;gap:8px;color:var(--mut);font-size:14px}
+#setform input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;min-width:0}
+#setform .hint{color:var(--mut)}
+#devmsg{margin-top:10px;min-height:1.4em;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -40,14 +45,15 @@ dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 
 <section>
 <div id="list" tabindex="0" aria-label="Disk images"></div>
-<div id="detail"></div>
 <div class="buttons">
   <button id="download">Download</button>
   <button id="upload">Upload</button>
+  <button id="rename">Rename</button>
   <button id="delete">Delete</button>
-  <button id="protect">Write protect</button>
+  <button id="protect">Protect</button>
   <button id="mount">Mount</button>
 </div>
+<div id="detail"></div>
 <input type="file" id="file" accept=".dsk,.do,.woz" hidden>
 <progress id="prog" max="1" value="0" hidden></progress>
 <div id="msg"></div>
@@ -56,6 +62,17 @@ dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 <section>
 <h2>Device</h2>
 <dl id="dev"></dl>
+<form id="setform" autocomplete="off">
+  <label>Hostname<input id="f_host" maxlength="63" spellcheck="false"><span class="hint">.local</span></label>
+  <label>WiFi network<input id="f_ssid" maxlength="32" spellcheck="false"></label>
+  <label>Password<input id="f_pw" type="password" maxlength="63" placeholder="leave blank to keep the current one" autocomplete="new-password"></label>
+</form>
+<div class="buttons">
+  <button id="setsave" type="submit" form="setform">Save</button>
+  <button id="restart">Restart</button>
+  <button id="setcancel">Cancel</button>
+</div>
+<div id="devmsg"></div>
 </section>
 <p id="err" class="bad"></p>
 </main>
@@ -88,7 +105,7 @@ function render() {
       el('div', r ? type(r) : ''),
       el('div', r ? String(r.size) : '', 'num'),
       el('div', i + 1 === mounted ? 'M' : ''),
-      el('div', r && r.writable ? 'W' : ''));
+      el('div', r && r.protected ? 'P' : ''));
     row.onclick = () => { sel = i; render(); list.focus(); };
     row.ondblclick = () => { sel = i; mount(); };
     list.append(row);
@@ -107,8 +124,11 @@ function render() {
   $('download').disabled = busy || !r;
   $('upload').disabled = busy;
   $('delete').disabled = busy || !r;
+  $('rename').disabled = busy || !r;
   $('protect').disabled = busy || !r;
-  $('protect').textContent = r && r.writable ? 'Write protect' : 'Write enable';
+  $('restart').disabled = busy;
+  formChanged();
+  $('protect').textContent = r && r.protected ? 'Unprotect' : 'Protect';
 }
 
 async function refresh() {
@@ -118,8 +138,10 @@ async function refresh() {
     render();
     const s = await (await fetch('/status', {cache: 'no-store'})).json();
     $('dev').replaceChildren(...[
-      ['Hostname', s.hostname + '.local'], ['WiFi', s.ssid], ['IP', s.ip || '—'],
+      ['IP', s.ip || '\u2014'],
       ['Signal', s.rssi_dbm == null ? '—' : s.rssi_dbm + ' dBm'], ['Firmware', s.firmware],
+      ['Network config', s.settings],
+      ['Last reset', s.last_reset], ['Stack headroom', s.stack_free + ' bytes'],
     ].flatMap(([k, v]) => [el('dt', k), el('dd', v)]));
     $('err').textContent = '';
   } catch (e) {
@@ -131,10 +153,11 @@ async function op(method, url, okText) {
   busy = true; render();
   try {
     const res = await fetch(url, {method});
+    const text = await res.text();
     let r = {};
-    try { r = await res.json(); } catch {}
+    try { r = JSON.parse(text); } catch {}
     if (res.ok && r.ok !== false) msg(okText, 'ok');
-    else msg('Failed: ' + (r.error || 'HTTP ' + res.status), 'bad');
+    else msg('Failed: ' + (r.error || text.trim() || 'HTTP ' + res.status), 'bad');
   } catch (e) {
     msg('Failed: ' + e.message, 'bad');
   }
@@ -156,9 +179,9 @@ $('mount').onclick = mount;
 $('protect').onclick = () => {
   const r = rows[sel];
   if (!r || busy) return;
-  const on = r.writable ? 0 : 1;
-  op('POST', `/writable/${sel + 1}?on=${on}`,
-     on ? `${label(r)} is writable (W).` : `${label(r)} is write-protected.`);
+  const on = r.protected ? 0 : 1;
+  op('POST', `/protect/${sel + 1}?on=${on}`,
+     on ? `${label(r)} is protected.` : `${label(r)} is unprotected.`);
 };
 
 $('download').onclick = () => {
@@ -166,6 +189,15 @@ $('download').onclick = () => {
   if (!r) return;
   const a = Object.assign(document.createElement('a'), {href: `/image/${sel + 1}`, download: r.name});
   document.body.append(a); a.click(); a.remove();
+};
+
+$('rename').onclick = () => {
+  const r = rows[sel];
+  if (!r || busy) return;
+  const now = label(r), ext = (r.name.match(/\.(dsk|do|woz)$/i) || [''])[0];
+  const name = prompt(`New name for ${now}` + (ext ? ` (stays ${ext})` : ''), now);
+  if (name === null || !name.trim() || name.trim() === now) return;
+  op('POST', `/rename/${sel + 1}?name=` + encodeURIComponent(name.trim()), `Renamed to ${name.trim()}.`);
 };
 
 $('delete').onclick = () => {
@@ -208,12 +240,110 @@ $('file').onchange = () => {
   x.send(f);
 };
 
+// ---- Device: settings and restart
+function devmsg(t, cls) { $('devmsg').textContent = t; $('devmsg').className = cls || ''; }
+
+// After a restart, wait until the drive answers again (same hostname), then reload.
+function waitForRestart(text) {
+  busy = true; render();
+  devmsg(text);
+  let seen_down = false, tries = 0;
+  const poll = async () => {
+    tries++;
+    try {
+      const s = await (await fetch('/status', {cache: 'no-store'})).json();
+      if (seen_down || s.uptime_s < 30) { location.reload(); return; }
+    } catch { seen_down = true; }
+    if (tries < 60) setTimeout(poll, 2000);
+    else devmsg('The drive has not come back yet. Check the LED, or try reloading in a moment.', 'bad');
+  };
+  setTimeout(poll, 4000);
+}
+
+let current = null;     // settings as last read from the drive
+
+async function loadSettings() {
+  try {
+    current = await (await fetch('/settings', {cache: 'no-store'})).json();
+    $('f_host').value = current.hostname;
+    $('f_ssid').value = current.ssid;
+    $('f_pw').value = '';
+    $('f_pw').placeholder = current.password_set ? 'leave blank to keep the current one' : 'none set (open network)';
+    formChanged();
+  } catch (e) {
+    devmsg('Could not read the settings: ' + e.message, 'bad');
+  }
+}
+
+function edited() {
+  return current && ($('f_host').value !== current.hostname ||
+                     $('f_ssid').value !== current.ssid || $('f_pw').value !== '');
+}
+
+function formChanged() {
+  $('setcancel').disabled = busy || !edited();
+  $('setsave').disabled = busy || !edited();
+}
+
+['f_host', 'f_ssid', 'f_pw'].forEach(id => $(id).oninput = formChanged);
+
+$('setcancel').onclick = () => { devmsg(''); loadSettings(); };
+
+$('setform').onsubmit = async e => {
+  e.preventDefault();
+  const host = $('f_host').value.trim().toLowerCase(), ssid = $('f_ssid').value, pw = $('f_pw').value;
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(host))
+    return devmsg('Hostname: 1 to 63 of a-z, 0-9 and "-", not starting or ending with "-".', 'bad');
+  if (ssid.length < 1 || ssid.length > 32)
+    return devmsg('WiFi network name: 1 to 32 characters.', 'bad');
+  if (pw && (pw.length < 8 || pw.length > 63))
+    return devmsg('Password: 8 to 63 characters (or blank to keep the current one).', 'bad');
+  if (!confirm(`The drive will restart and join "${ssid}" as ${host}.local.\n\n` +
+               'If it cannot connect within about 2 minutes, it falls back to the built-in network for that start.'))
+    return;
+  busy = true; render();
+  try {
+    const body = new URLSearchParams({hostname: host, ssid});
+    if (pw) body.set('password', pw);
+    const res = await fetch('/settings', {method: 'POST', body});
+    const text = await res.text();
+    let r = {};
+    try { r = JSON.parse(text); } catch {}
+    $('f_pw').value = '';
+    if (!res.ok || r.ok === false) {
+      busy = false; render();
+      return devmsg('Not saved: ' + (r.error || text.trim() || 'HTTP ' + res.status), 'bad');
+    }
+    if (host !== location.hostname.replace(/\.local$/, '')) {
+      $('devmsg').replaceChildren('Saved. The drive is restarting; in about 20 seconds open ',
+        Object.assign(document.createElement('a'), {href: `http://${host}.local/`, textContent: `http://${host}.local/`}), '.');
+      return;
+    }
+    waitForRestart('Saved. Restarting\u2026');
+  } catch (err) {
+    busy = false; render();
+    devmsg('Not saved: ' + err.message, 'bad');
+  }
+};
+
+$('restart').onclick = async () => {
+  if (busy || !confirm('Restart the drive?')) return;
+  try {
+    const res = await fetch('/restart', {method: 'POST'});
+    if (!res.ok) return devmsg('Restart refused: ' + (await res.text()).trim(), 'bad');
+    waitForRestart('Restarting\u2026');
+  } catch (e) {
+    devmsg('Restart failed: ' + e.message, 'bad');
+  }
+};
+
 $('list').onkeydown = e => {
   if (e.key === 'ArrowDown') { sel = Math.min(ROWS - 1, sel + 1); render(); e.preventDefault(); }
   else if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); render(); e.preventDefault(); }
   else if (e.key === 'Enter') { mount(); e.preventDefault(); }
 };
 
+loadSettings();
 refresh().then(() => { if (mounted) { sel = mounted - 1; render(); } $('list').focus(); });
 setInterval(() => { if (!busy) refresh(); }, 3000);
 </script>

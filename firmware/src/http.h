@@ -21,6 +21,8 @@ const char *http_method(const conn_t *c);
 const char *http_path(const conn_t *c);
 long        http_content_length(const conn_t *c);   // -1 if absent
 bool        http_query_param(const conn_t *c, const char *key, char *out, size_t n);
+// Same, for any "a=1&b=2" string (e.g. a form-encoded request body).
+bool        http_form_param(const char *form, const char *key, char *out, size_t n);
 
 // Queue the response. If copy_body is false, body must stay valid until the
 // connection closes (static data or flash).

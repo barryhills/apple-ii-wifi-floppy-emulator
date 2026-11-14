@@ -440,7 +440,8 @@ int store_write_finish(int row, const char *name, int64_t uploaded, char *err, s
         return -1;
     }
 
-    dir_t nd = cur;
+    static dir_t nd;            // static: keep 1.1 KB off the shared stack
+    nd = cur;
     dir_entry_t *e = &nd.e[row];
     memset(e, 0, sizeof *e);
     e->used = 1;
@@ -474,7 +475,8 @@ int store_mount(int row, char *err, size_t errn)
     }
     if (row == cur.current)
         return 0;
-    dir_t nd = cur;
+    static dir_t nd;            // static: keep 1.1 KB off the shared stack
+    nd = cur;
     nd.current = row;
     if (dir_commit(&nd, err, errn))
         return -1;
@@ -490,7 +492,8 @@ int store_delete(int row, char *err, size_t errn)
     }
     if (!cur.e[row].used)
         return 0;
-    dir_t nd = cur;
+    static dir_t nd;            // static: keep 1.1 KB off the shared stack
+    nd = cur;
     memset(&nd.e[row], 0, sizeof nd.e[row]);
     if (nd.current == row)
         nd.current = -1;
@@ -511,10 +514,54 @@ int store_set_writable(int row, bool writable, char *err, size_t errn)
                              : (cur.e[row].flags & (uint8_t)~IMG_FLAG_WRITABLE);
     if (flags == cur.e[row].flags)
         return 0;
-    dir_t nd = cur;
+    static dir_t nd;            // static: keep 1.1 KB off the shared stack
+    nd = cur;
     nd.e[row].flags = flags;
     if (dir_commit(&nd, err, errn))
         return -1;
     printf("store: row %d %s\n", row + 1, writable ? "writable" : "write-protected");
+    return 0;
+}
+
+int store_rename(int row, const char *name, char *err, size_t errn)
+{
+    if (row < 0 || row >= STORE_ROWS || !cur.e[row].used) {
+        snprintf(err, errn, "that row is empty");
+        return -1;
+    }
+    if (!name[0] || strlen(name) >= IMAGE_NAME_MAX) {
+        snprintf(err, errn, "name must be 1 to %d characters", IMAGE_NAME_MAX - 1);
+        return -1;
+    }
+    if (strcmp(name, cur.e[row].name) == 0)
+        return 0;
+    static dir_t nd;            // static: keep 1.1 KB off the shared stack
+    nd = cur;
+    memset(nd.e[row].name, 0, IMAGE_NAME_MAX);
+    strncpy(nd.e[row].name, name, IMAGE_NAME_MAX - 1);
+    if (dir_commit(&nd, err, errn))
+        return -1;
+    printf("store: row %d renamed to \"%s\"\n", row + 1, name);
+    return 0;
+}
+
+int store_write_raw_sector(uint32_t off, const void *data, size_t len, char *err, size_t errn)
+{
+    if (off % FLASH_SECTOR_SIZE || len > FLASH_SECTOR_SIZE ||
+        off < STORE_OFFSET || off >= SLOT_BASE) {
+        snprintf(err, errn, "bad settings sector");
+        return -1;
+    }
+    memset(secbuf, 0xFF, sizeof secbuf);
+    memcpy(secbuf, data, len);
+    size_t plen = (len + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1);
+    if (!flash_erase(off, FLASH_SECTOR_SIZE) || !flash_program(off, secbuf, plen)) {
+        snprintf(err, errn, "flash write failed");
+        return -1;
+    }
+    if (memcmp((const void *)(XIP_BASE + off), data, len) != 0) {
+        snprintf(err, errn, "flash read-back mismatch");
+        return -1;
+    }
     return 0;
 }

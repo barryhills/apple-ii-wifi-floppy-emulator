@@ -7,7 +7,7 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/apps/mdns.h"
 
-#include "config_defaults.h"
+#include "config.h"
 #include "net.h"
 #include "api.h"
 #include "clock.h"
@@ -25,11 +25,14 @@ static int32_t rssi_cache;
 static bool rssi_valid;
 static char ip_str[16];
 
-// Runtime config. For now always the build-time defaults; later loaded from
-// flash. Must stay valid for the life of the netif (lwIP keeps the pointer).
-static const char *cfg_ssid     = CFG_DEFAULT_SSID;
-static const char *cfg_password = CFG_DEFAULT_PASSWORD;
-static const char *cfg_hostname = CFG_DEFAULT_HOSTNAME;
+// Settings come from config.c (stored in flash, else config.json). If stored
+// WiFi settings have not connected after FALLBACK_MS, use the built-in ones
+// for the rest of this boot, so a typo cannot strand the drive.
+#define FALLBACK_MS  120000
+#define cfg_ssid     config_ssid()
+#define cfg_password config_password()
+#define cfg_hostname config_hostname()
+static bool ever_up;
 
 static struct netif *sta_netif(void)
 {
@@ -93,6 +96,12 @@ static void start_connect(void)
 static void give_up(const char *why)
 {
     printf("wifi: %s; retrying in %d s\n", why, RETRY_DELAY_MS / 1000);
+    if (!ever_up && config_source() == CFG_STORED && config_builtin_wifi_differs() &&
+        to_ms_since_boot(get_absolute_time()) > FALLBACK_MS) {
+        printf("wifi: stored settings have not connected in %d s; using built-in settings\n",
+               FALLBACK_MS / 1000);
+        config_use_builtin_wifi();
+    }
     cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
     ip_str[0] = 0;
     rssi_valid = false;
@@ -117,6 +126,7 @@ void net_poll(void)
             cyw43_arch_lwip_end();
             printf("wifi: up, IP %s, http://%s.local/\n", ip_str, cfg_hostname);
             state = NET_UP;
+            ever_up = true;
             next_rssi = get_absolute_time();
         } else if (link < 0) {
             give_up(link_str(link));

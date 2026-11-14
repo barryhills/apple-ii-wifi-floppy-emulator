@@ -7,7 +7,11 @@
 //   DELETE /image/N       clear row N
 //   POST   /mount/N       mount row N (refused if the row is empty)
 //   POST   /eject         unmount: the drive becomes empty
-//   POST   /writable/N?on=1|0   set or clear row N's "W" (writable) tag
+//   POST   /protect/N?on=1|0    protect (P) or unprotect row N
+//   GET    /settings      hostname, SSID, source (never the password)
+//   POST   /settings      form body ssid=&password=&hostname= ; saves, restarts
+//   POST   /restart       restart the drive
+//   POST   /rename/N?name=X     rename row N (the file type is kept)
 //   GET    /image         download the mounted image
 //   GET    /image.woz     test only: mounted .dsk GCR-encoded as WOZ 2
 //
@@ -32,10 +36,13 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
+#include "hardware/watchdog.h"
 #include "lwip/opt.h"
 
 #include "api.h"
 #include "clock.h"
+#include "config.h"
+#include "diag.h"
 #include "http.h"
 #include "json.h"
 #include "status.h"
@@ -62,11 +69,19 @@ static uint32_t   ring_head, ring_tail; // free-running byte counters
 static uint8_t    readers[STORE_SLOTS_MAX];    // downloads per image space
 static int        up_row;
 
-typedef enum { OP_NONE, OP_MOUNT, OP_DELETE, OP_WRITABLE } op_t;
+typedef enum { OP_NONE, OP_MOUNT, OP_DELETE, OP_WRITABLE, OP_RENAME, OP_SETTINGS } op_t;
 static op_t       op;
 static int        op_row;
 static bool       op_on;
+static char       op_name[IMAGE_NAME_MAX];
+static char       set_body[512 + 1];            // POST /settings form
+static char       set_ssid[CFG_SSID_MAX + 1], set_pw[CFG_PASSWORD_MAX + 1],
+                  set_host[CFG_HOSTNAME_MAX + 1];
+static absolute_time_t restart_at;              // nil = no restart pending
+static bool       restart_pending;
 static conn_t    *op_conn;
+
+static bool busy(void);
 
 // Printable ASCII only; no quote, backslash or slash (it goes into a
 // Content-Disposition header and JSON).
@@ -94,6 +109,53 @@ static bool ends_with_ci(const char *s, const char *suffix)
         if (a != b)
             return false;
     }
+    return true;
+}
+
+// The image's file extension (".dsk", ".woz", ...) from its stored name, or
+// one implied by its format.
+static const char *image_ext(const image_info_t *im)
+{
+    const char *dot = strrchr(im->name, '.');
+    if (dot && (ends_with_ci(dot, ".dsk") || ends_with_ci(dot, ".do") || ends_with_ci(dot, ".woz")))
+        return dot;
+    return im->format == FMT_DSK ? ".dsk" : ".woz";
+}
+
+// Rename request: new display name + the image's existing extension. A
+// typed extension of its own (".dsk/.do/.woz") is dropped.
+static bool rename_target(int row, const char *raw, char *out, char *msg, size_t msgn)
+{
+    image_info_t im;
+    if (!store_row(row, &im)) {
+        snprintf(msg, msgn, "that row is empty\n");
+        return false;
+    }
+    char base[IMAGE_NAME_MAX];
+    size_t n = 0;
+    while (*raw == ' ')
+        raw++;
+    for (; *raw && n < sizeof base - 1; raw++)
+        base[n++] = *raw;
+    base[n] = 0;
+    while (n && base[n - 1] == ' ')
+        base[--n] = 0;
+    char *dot = strrchr(base, '.');
+    if (dot && (ends_with_ci(dot, ".dsk") || ends_with_ci(dot, ".do") || ends_with_ci(dot, ".woz")))
+        *dot = 0;
+    const char *ext = image_ext(&im);
+    if (!base[0]) {
+        snprintf(msg, msgn, "the name is empty\n");
+        return false;
+    }
+    if (strlen(base) + strlen(ext) >= IMAGE_NAME_MAX) {
+        snprintf(msg, msgn, "name too long (max %u characters)\n",
+                 (unsigned)(IMAGE_NAME_MAX - 1 - strlen(ext)));
+        return false;
+    }
+    char full[2 * IMAGE_NAME_MAX];      // length already checked above
+    snprintf(full, sizeof full, "%s%s", base, ext);
+    sanitize_name(out, full);
     return true;
 }
 
@@ -289,7 +351,7 @@ static void upload_closed(conn_t *c)
 
 static void put_image(conn_t *c, int row)
 {
-    if (up_state != UP_IDLE || op != OP_NONE) {
+    if (busy()) {
         http_respond_text(c, 409, "another upload is in progress\n");
         return;
     }
@@ -352,9 +414,9 @@ static void get_images(conn_t *c)
             snprintf(up, sizeof up, "%lld", (long long)im.uploaded);
         o += (size_t)snprintf(body + o, sizeof body - o,
             "%s{\"name\":\"%s\",\"format\":\"%s\",\"size\":%lu,\"sha256\":\"%s\","
-            "\"uploaded\":%s,\"verified\":%s,\"writable\":%s}",
+            "\"uploaded\":%s,\"verified\":%s,\"protected\":%s}",
             sep, name, store_format_name(im.format), (unsigned long)im.size, hex, up,
-            im.verified ? "true" : "false", (im.flags & IMG_FLAG_WRITABLE) ? "true" : "false");
+            im.verified ? "true" : "false", (im.flags & IMG_FLAG_WRITABLE) ? "false" : "true");
         if (o >= sizeof body)
             break;
     }
@@ -377,7 +439,7 @@ static void op_closed(conn_t *c)
 
 static void start_op(conn_t *c, op_t what, int row)
 {
-    if (up_state != UP_IDLE || op != OP_NONE) {
+    if (busy()) {
         http_respond_text(c, 409, "busy; try again\n");
         return;
     }
@@ -391,9 +453,19 @@ static void start_op(conn_t *c, op_t what, int row)
 static void run_op(void)
 {
     char err[96];
-    int rc = op == OP_MOUNT  ? store_mount(op_row, err, sizeof err) :
-             op == OP_DELETE ? store_delete(op_row, err, sizeof err) :
-                               store_set_writable(op_row, op_on, err, sizeof err);
+    int rc = op == OP_MOUNT    ? store_mount(op_row, err, sizeof err) :
+             op == OP_DELETE   ? store_delete(op_row, err, sizeof err) :
+             op == OP_RENAME   ? store_rename(op_row, op_name, err, sizeof err) :
+             op == OP_SETTINGS ? config_save(set_ssid, set_pw, set_host, err, sizeof err) :
+                                 store_set_writable(op_row, op_on, err, sizeof err);
+    if (op == OP_SETTINGS) {
+        memset(set_pw, 0, sizeof set_pw);
+        memset(set_body, 0, sizeof set_body);
+        if (rc == 0) {
+            restart_pending = true;     // after the reply has gone out
+            restart_at = make_timeout_time_ms(1500);
+        }
+    }
     static char e[sizeof err * 6], body[sizeof e + 64];
     int code = 200;
     if (rc == 0) {
@@ -411,6 +483,72 @@ static void run_op(void)
     }
     op = OP_NONE;
     cyw43_arch_lwip_end();
+}
+
+// ---------------------------------------------------------------- settings / restart
+
+static bool busy(void)
+{
+    return up_state != UP_IDLE || op != OP_NONE || restart_pending;
+}
+
+static void get_settings(conn_t *c)
+{
+    static char h[CFG_HOSTNAME_MAX * 6 + 1], sd[CFG_SSID_MAX * 6 + 1], body[700];
+    json_escape(h, sizeof h, config_hostname());
+    json_escape(sd, sizeof sd, config_ssid());
+    int n = snprintf(body, sizeof body,
+        "{\"hostname\":\"%s\",\"ssid\":\"%s\",\"password_set\":%s,\"source\":\"%s\"}\n",
+        h, sd, config_password()[0] ? "true" : "false", config_source_text());
+    http_respond(c, 200, "application/json", body, (size_t)n, true, NULL);
+}
+
+static void settings_body_done(conn_t *c)
+{
+    // Body complete (lwIP context). Parse and check here; the flash write
+    // happens in the main loop.
+    char why[96];
+    if (busy()) {
+        http_respond_text(c, 409, "busy; try again\n");
+        return;
+    }
+    if (!http_form_param(set_body, "ssid", set_ssid, sizeof set_ssid) ||
+        !http_form_param(set_body, "hostname", set_host, sizeof set_host)) {
+        http_respond_text(c, 400, "need ssid and hostname\n");
+        return;
+    }
+    if (!http_form_param(set_body, "password", set_pw, sizeof set_pw))
+        set_pw[0] = 0;                  // blank: keep the current password
+    const char *bad = config_check(set_ssid, set_pw, set_host);
+    if (bad) {
+        snprintf(why, sizeof why, "%s\n", bad);
+        memset(set_pw, 0, sizeof set_pw);
+        http_respond(c, 400, "text/plain; charset=utf-8", why, strlen(why), true, NULL);
+        return;
+    }
+    op = OP_SETTINGS;
+    op_conn = c;
+    http_set_on_close(c, op_closed);    // reply is sent by run_op()
+}
+
+static void post_settings(conn_t *c)
+{
+    long cl = http_content_length(c);
+    if (busy())
+        return http_respond_text(c, 409, "busy; try again\n");
+    if (cl <= 0 || cl > (long)(sizeof set_body - 1))
+        return http_respond_text(c, 400, "settings form missing or too long\n");
+    memset(set_body, 0, sizeof set_body);
+    http_receive_body(c, (uint8_t *)set_body, (size_t)cl, settings_body_done);
+}
+
+static void post_restart(conn_t *c)
+{
+    if (busy())
+        return http_respond_text(c, 409, "busy; try again\n");
+    restart_pending = true;
+    restart_at = make_timeout_time_ms(1000);
+    http_respond(c, 200, "application/json", "{\"ok\":true}\n", 12, false, NULL);
 }
 
 // ---------------------------------------------------------------- routing
@@ -463,12 +601,37 @@ static void handle(conn_t *c)
         if (!post)
             return method_not_allowed(c, "POST");
         start_op(c, OP_MOUNT, row);
+    } else if (strncmp(p, "/rename/", 8) == 0) {
+        int row = parse_row(p + 8);
+        char raw[3 * IMAGE_NAME_MAX], msg[96];
+        if (row < 0)
+            return http_respond_text(c, 404, "rows are 1 to 10\n");
+        if (!post)
+            return method_not_allowed(c, "POST");
+        if (!http_query_param(c, "name", raw, sizeof raw))
+            return http_respond_text(c, 400, "need ?name=\n");
+        if (busy())
+            return http_respond_text(c, 409, "busy; try again\n");
+        if (!rename_target(row, raw, op_name, msg, sizeof msg))
+            return http_respond(c, 400, "text/plain; charset=utf-8", msg, strlen(msg), true, NULL);
+        start_op(c, OP_RENAME, row);
+    } else if (strcmp(p, "/settings") == 0) {
+        if (get)
+            get_settings(c);
+        else if (post)
+            post_settings(c);
+        else
+            method_not_allowed(c, "GET, POST");
+    } else if (strcmp(p, "/restart") == 0) {
+        if (!post)
+            return method_not_allowed(c, "POST");
+        post_restart(c);
     } else if (strcmp(p, "/eject") == 0) {
         if (!post)
             return method_not_allowed(c, "POST");
         start_op(c, OP_MOUNT, -1);
-    } else if (strncmp(p, "/writable/", 10) == 0) {
-        int row = parse_row(p + 10);
+    } else if (strncmp(p, "/protect/", 9) == 0) {
+        int row = parse_row(p + 9);
         char on[4];
         if (row < 0)
             return http_respond_text(c, 404, "rows are 1 to 10\n");
@@ -476,7 +639,7 @@ static void handle(conn_t *c)
             return method_not_allowed(c, "POST");
         if (!http_query_param(c, "on", on, sizeof on) || (strcmp(on, "0") && strcmp(on, "1")))
             return http_respond_text(c, 400, "need ?on=1 or ?on=0\n");
-        op_on = on[0] == '1';
+        op_on = on[0] == '0';           // stored as "writable" = not protected
         start_op(c, OP_WRITABLE, row);
     } else if (strcmp(p, "/image") == 0) {
         if (!get)
@@ -536,6 +699,14 @@ static void finish_upload(void)
 bool api_poll(void)
 {
     static uint8_t chunk[4096];
+
+    if (restart_pending && time_reached(restart_at)) {
+        printf("restart requested\n");
+        sleep_ms(50);                   // let the console drain
+        watchdog_reboot(0, 0, 0);
+        for (;;)
+            ;
+    }
 
     if (op != OP_NONE) {
         run_op();

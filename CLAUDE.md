@@ -88,6 +88,12 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   the selected row (Mount/Unmount, Write enable/protect). Mount/delete run in
   the main loop like uploads. Sticky mount across
   power cycles. Next: PIO player (milestones 4-5).
+- **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
+  in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
+  (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
+  reset" and "Stack headroom" (lowest seen ~1.9 KB of 4 KB under stress).
+  Directory copies (1.1 KB) moved off the shared stack: likely cause of the
+  two freezes (stack overflow during uploads), not proven.
 - **Unexplained hang (2026-11-13):** v0.2-m2 froze while idle (no USB serial,
   no picotool reset, no network) after Barry's M2 tests; cured by replug.
   Cause unknown. Since v0.3-m3 the LED is a heartbeat (5 Hz connecting, 1 Hz
@@ -221,7 +227,9 @@ field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
   ~256 KB slots).
 - **Interim persistence rule:** one image, stored in flash, served at every
   power-on. Full persistence behaviour is deferred (see below).
-- **Network:** DHCP, mDNS name `a2drive.local` (DHCP reservation as fallback),
+- **Network:** DHCP, mDNS name `a2drive.local` by default. **Barry renamed his
+  drive to `apple2vdisk.local`** (stored setting, 2026-11-13; IP on the home LAN).
+  DHCP reservation as fallback;
   plain HTTP, no auth on the home LAN. WiFi is 2.4 GHz only (fine for Barry).
   A failed upload must leave the mounted image untouched (swap after complete).
 - **IPv6 is enabled (link-local) on purpose:** lwIP's mDNS can't send the NSEC
@@ -230,25 +238,30 @@ field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
 - HTTP server is our own on lwIP raw TCP (`src/http.c`), not lwIP httpd, which
   can't do PUT/DELETE.
 
-### HTTP API (as built, v0.5-list; rows are 1-10)
+### HTTP API (as built, v0.7-settings; rows are 1-10)
 
 | Request | Purpose |
 |---|---|
 | `GET /` | the page (`src/web/index.html`, embedded at build) |
-| `GET /images` | JSON list: mounted row, busy, 10 rows (name, format, size, sha256, uploaded, verified, writable) or null |
+| `GET /images` | JSON list: mounted row, busy, 10 rows (name, format, size, sha256, uploaded, verified, protected) or null |
 | `PUT /image/N?name=X` | upload .dsk (143,360 bytes) or .woz (up to 256 KB) into row N, replacing it |
 | `GET /image/N` | download row N as uploaded |
 | `DELETE /image/N` | clear row N (if mounted, the drive becomes empty) |
 | `POST /mount/N` | mount row N (an empty row is refused, 409) |
 | `POST /eject` | unmount: drive empty |
-| `POST /writable/N?on=1\|0` | set/clear row N's W tag (stored; honoured from milestone 6) |
+| `POST /rename/N?name=X` | rename row N; keeps the file type (a typed .dsk/.do/.woz is dropped) |
+| `POST /protect/N?on=1\|0` | protect (P) / unprotect row N (stored; honoured from milestone 6) |
 | `GET /image` | download the mounted image |
 | `GET /status` | device JSON incl. mounted_row and mounted image |
+| `GET /settings` | hostname, SSID, password_set, source (never the password) |
+| `POST /settings` | form body `ssid=&password=&hostname=` (blank password = keep); saves to flash, restarts |
+| `POST /restart` | restart (refused while busy) |
 | `GET /image.woz` | test only: mounted .dsk encoded to WOZ 2 |
 
-Later: `PUT /config`, and a list of images once the multi-image design is
-decided. **GUI vocabulary (decided 2026-11-13):** the image the drive serves
-is the **mounted** image, tag **M**; a writable image gets tag **W**. **Users
+**GUI vocabulary (decided 2026-11-13, revised same day):** the image
+the drive serves is the **mounted** image, tag **M**; a write-protected image
+gets tag **P** (button Protect/Unprotect; "W" was dropped as ambiguous). New
+uploads arrive protected. **Users
 never see the word "slot"** (it means Apple slot / drive to
 them). Internally, a 256 KB flash area is an "image space".
 
@@ -288,16 +301,39 @@ into the decoder.
 
 ## Deferred / open items
 
-- **Persistence + multiple images + OLED navigation** — one discussion, later.
-  Which image is active after power-on / reset, slot management from the //e and
-  from the buttons. Earlier ideas (not decided): sticky mount; selector program
-  that reads a directory sector and writes a mount command via RWTS to drive 2.
-- **WiFi provisioning — decided 2026-11-13:** build-time defaults from
-  `firmware/config.json` (gitignored; `config.example.json` committed; keys
-  `ssid`, `password`, `hostname`; CMake validates and generates
-  `config_defaults.h`). Next: config stored in a flash sector overrides the
-  defaults, edited from the Pico-served HTML configurator (which later grows
-  slot/image management). Optional later: soft-AP setup fallback.
+- **Division of control (decided 2026-11-13, Barry; revised same day):**
+  - *Web page:* everything: upload, download, delete, mount (M), protect
+    (P), rename, settings, restart.
+  - *Drive (OLED + buttons):* setup-mode bootstrap (UP+DOWN at power-on);
+    otherwise navigate the list and **change the mounted image (M) only**.
+    Never P, delete, upload or rename.
+  - *The //e via a disk copier (Copy II+):* writes into the **mounted**
+    image only, and only if it is **not P**: ordinary drive writes (milestone 6).
+  - *The //e filling an empty slot:* wanted, but the **absolute last feature**.
+  - *A //e selector program* (M, P, rename): wanted, optional, after the
+    core. Needs the knock analysis.
+  - Last mounted image stays mounted across power-off.
+  - OLED list: open question whether to mark the mounted image (likely yes,
+    since the buttons change it).
+- **Rename** (built in v0.6-rename; Barry tested): GUI-only button acting on the selected
+  row; changes the display name, keeps the file type (download =
+  newname + original extension); same character rules as uploads. Short
+  names matter for the ~16-21 character OLED.
+- **Network setup (agreed 2026-11-13; Settings/Restart BUILT in v0.7 and tested, setup-mode AP not yet):**
+  Device window: info list, then always-visible fields (hostname, WiFi network,
+  write-only password), then buttons Save (stores + restarts) · Restart · Cancel.
+  If stored WiFi settings don't connect within 120 s the drive falls back to
+  the built-in (config.json) network for that boot (tested: back in 134 s).
+  Device window gets **Settings**
+  (hostname, SSID, write-only password; Save & restart) and **Restart**
+  (greyed during flash work). Settings stored in the reserved flash sector;
+  `config.json` is the build-time fallback. **Setup mode:** the Pico becomes
+  its own access point "a2drive-setup" at a fixed address (e.g. 192.168.4.1)
+  and serves the same page opened on Settings. Entered automatically (no
+  stored settings, or can't join for ~2 min) or by holding UP+DOWN at
+  power-on. OLED in setup mode: "Join a2drive-setup / Open 192.168.4.1".
+  Not built yet. Check pico-examples' AP DHCP/DNS servers before relying on
+  them.
 - **Knock** — Apple selects drive 2, motor on (asserts ENABLE*), toggles a phase
   pattern a normal seek never produces, motor off. Needs analysis of the RWTS
   seek routine to pick a provably unused pattern. Knock steps must not move the

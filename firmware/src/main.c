@@ -7,6 +7,8 @@
 #include "pico/cyw43_arch.h"
 
 #include "api.h"
+#include "config.h"
+#include "diag.h"
 #include "net.h"
 #include "store.h"
 #include "status.h"
@@ -22,6 +24,7 @@ static void print_status(void)
 
 int main(void)
 {
+    diag_paint_stack();
     stdio_init_all();
 
     if (cyw43_arch_init()) {
@@ -31,15 +34,19 @@ int main(void)
         }
     }
     printf("\na2drive %s starting\n", A2DRIVE_VERSION);
+    diag_init();
     printf("sha256 self-test: %s\n", sha256_selftest() ? "OK" : "FAILED");
     store_init();
+    config_load();
     net_init();
+    diag_watchdog_start();
 
     // LED heartbeat, timed from the main loop: 5 Hz while connecting to
     // WiFi, 1 Hz once up. A steady LED, on or off, means the loop stopped.
     // (The LED sits on the WiFi chip, so only send changes.)
     int led = -1;
     for (;;) {
+        diag_feed();
         net_poll();
         bool busy = api_poll();
         uint32_t ds = (uint32_t)(time_us_64() / 100000);       // 100 ms units

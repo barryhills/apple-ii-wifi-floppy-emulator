@@ -77,6 +77,8 @@ add_executable(a2drive
     src/store.c
     src/clock.c
     src/json.c
+    src/diag.c
+    src/config.c
     src/gcr.c
     src/woz.c
     src/crc32.c
@@ -89,8 +91,9 @@ target_include_directories(a2drive PRIVATE
 )
 target_compile_options(a2drive PRIVATE -Wall -Wextra)
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.5-list"
+    A2DRIVE_VERSION="0.7-settings"
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
+    PICO_USE_STACK_GUARDS=1     # M33 MSPLIM: stack overflow faults at once (see diag.c)
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages
 )
 target_link_libraries(a2drive

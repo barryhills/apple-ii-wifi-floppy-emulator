@@ -317,8 +317,13 @@ static void url_decode(char *out, size_t n, const char *s, size_t len)
 
 bool http_query_param(const conn_t *c, const char *key, char *out, size_t n)
 {
+    return http_form_param(c->query, key, out, n);
+}
+
+bool http_form_param(const char *form, const char *key, char *out, size_t n)
+{
     size_t kl = strlen(key);
-    for (const char *q = c->query; q && *q; ) {
+    for (const char *q = form; q && *q; ) {
         const char *amp = strchr(q, '&');
         size_t seg = amp ? (size_t)(amp - q) : strlen(q);
         if (seg > kl && q[kl] == '=' && strncmp(q, key, kl) == 0) {

@@ -3,6 +3,8 @@
 #include "pico/unique_id.h"
 
 #include "clock.h"
+#include "config.h"
+#include "diag.h"
 #include "json.h"
 #include "net.h"
 #include "status.h"
@@ -52,9 +54,11 @@ size_t status_json(char *buf, size_t n)
     int len = snprintf(buf, n,
         "{\"firmware\":\"%s\",\"board_id\":\"%s\",\"hostname\":\"%s\","
         "\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi_dbm\":%s,\"uptime_s\":%llu,"
-        "\"time\":%s,\"mounted_row\":%d,\"image\":%s,\"halftrack\":null,\"write_protect\":true}\n",
+        "\"time\":%s,\"mounted_row\":%d,\"image\":%s,\"halftrack\":null,\"write_protect\":true,"
+        "\"last_reset\":\"%s\",\"stack_free\":%lu,\"settings\":\"%s\"}\n",
         A2DRIVE_VERSION, id, net_hostname(), ssid, net_ip_str(), rssi,
-        (unsigned long long)(time_us_64() / 1000000), now, store_mounted() + 1, image);
+        (unsigned long long)(time_us_64() / 1000000), now, store_mounted() + 1, image,
+        diag_last_reset(), (unsigned long)diag_stack_free(), config_source_text());
     if (len < 0)
         len = 0;
     if ((size_t)len >= n)
