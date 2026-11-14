@@ -103,6 +103,17 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   a hang while connecting now looks like "connecting" (watchdog still
   reboots). LED can't light before `cyw43_arch_init()`, i.e. dark for the
   first ~2 s (USB console wait).
+- **OLED + buttons passed** 2026-11-14 (Barry, breadboard; v0.9.1-buttons).
+  `src/oled.c`: SSD1306 on I2C0 at 0x3C, init from pico-examples; 5x7 font
+  from Adafruit-GFX (`src/font5x7.h`, BSD) drawn **double height** (5x14):
+  4 lines x 21 chars (single height was too small for Barry). Home screen:
+  hostname.local / IP (or "connecting...") / brief message / mounted image
+  name. Any button opens the picker: header "Mount N of M" + 3-line
+  scrolling window of filled rows, cursor in inverse video, '*' = mounted;
+  **UP (pin 19) = next image, DOWN (pin 20) = previous** (Barry's choice);
+  hold repeats; SELECT mounts; 15 s idle -> home. Mount refused while the
+  web API is busy (`api_busy()`). Breadboard: timing jumper GP10 (pin 14)
+  -> GP8 (pin 11) for milestone 4.
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last

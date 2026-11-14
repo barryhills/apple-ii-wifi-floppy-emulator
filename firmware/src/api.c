@@ -487,6 +487,8 @@ static void run_op(void)
 
 // ---------------------------------------------------------------- settings / restart
 
+bool api_busy(void) { return busy(); }
+
 static bool busy(void)
 {
     return up_state != UP_IDLE || op != OP_NONE || restart_pending;

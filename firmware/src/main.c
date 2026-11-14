@@ -10,6 +10,7 @@
 #include "config.h"
 #include "diag.h"
 #include "net.h"
+#include "oled.h"
 #include "store.h"
 #include "status.h"
 
@@ -36,6 +37,7 @@ int main(void)
     printf("\na2drive %s starting\n", A2DRIVE_VERSION);
     diag_init();
     printf("sha256 self-test: %s\n", sha256_selftest() ? "OK" : "FAILED");
+    oled_init();
     store_init();
     config_load();
     net_init();
@@ -50,6 +52,7 @@ int main(void)
         diag_feed();
         net_poll();
         bool busy = api_poll();
+        oled_poll();
         uint32_t ds = (uint32_t)(time_us_64() / 100000);       // 100 ms units
         int want = net_is_up() ? (ds % 10) < 5 : 1;
         if (want != led) {
