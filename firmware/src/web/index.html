@@ -14,12 +14,11 @@ h1{font-size:20px;margin:0 0 16px}
 h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 10px;font-weight:600}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
 #list{outline:none}
-.row{display:grid;grid-template-columns:22px 1fr 52px 80px 22px 22px;align-items:center;gap:8px;
+.row{display:grid;grid-template-columns:22px 22px 1fr;align-items:center;gap:6px;
      padding:1px 8px;line-height:1.5;border-radius:4px;cursor:pointer;font-weight:600;user-select:none}
 .row.sel{background:var(--sel)}
-.row .arrow{visibility:hidden}.row.sel .arrow{visibility:visible}
-.row .num{text-align:right;font-variant-numeric:tabular-nums}
 .row.empty .name{color:var(--mut);font-weight:400}
+.tog{text-align:center}.tog.off{opacity:.3}.tog:hover{opacity:1}
 .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #detail{color:var(--mut);font-size:13px;margin:12px 2px 0;min-height:1.4em;overflow-wrap:anywhere}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
@@ -44,14 +43,13 @@ dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 <h1>Apple II WiFi Disk</h1>
 
 <section>
-<div id="list" tabindex="0" aria-label="Disk images"></div>
+<h2>Carousel</h2>
+<div id="list" tabindex="0" aria-label="Disk image carousel"></div>
 <div class="buttons">
   <button id="download">Download</button>
   <button id="upload">Upload</button>
   <button id="rename">Rename</button>
   <button id="delete">Delete</button>
-  <button id="protect">Protect</button>
-  <button id="mount">Mount</button>
 </div>
 <div id="detail"></div>
 <input type="file" id="file" accept=".dsk,.do,.woz" hidden>
@@ -81,8 +79,6 @@ dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 const DSK = 143360, MAX = 262144, ROWS = 10, $ = id => document.getElementById(id);
 let rows = Array(ROWS).fill(null), mounted = 0, sel = 0, busy = false;
 
-const label = r => r.name.replace(/\.(dsk|do|woz)$/i, '');
-const type = r => r.format === 'dsk' ? 'DSK' : 'WOZ';
 const typeLong = {dsk: 'DSK', woz1: 'WOZ 1', woz2: 'WOZ 2'};
 const when = t => t ? new Date(t * 1000).toLocaleString() : 'upload time unknown';
 function msg(t, cls) { $('msg').textContent = t; $('msg').className = cls || ''; }
@@ -99,15 +95,17 @@ function render() {
   list.replaceChildren();
   rows.forEach((r, i) => {
     const row = el('div', '', 'row' + (i === sel ? ' sel' : '') + (r ? '' : ' empty'));
-    row.append(
-      el('div', '▶', 'arrow'),
-      el('div', r ? label(r) : '<empty>', 'name'),
-      el('div', r ? type(r) : ''),
-      el('div', r ? String(r.size) : '', 'num'),
-      el('div', i + 1 === mounted ? 'M' : ''),
-      el('div', r && r.protected ? 'P' : ''));
+    // The mount marker and the lock are both the state and the control.
+    const m = el('div', r ? (i + 1 === mounted ? '●' : '○') : '', 'tog');
+    const p = el('div', r ? (r.protected ? '🔒' : '🔓') : '', 'tog' + (r && !r.protected ? ' off' : ''));
+    if (r) {
+      m.title = i + 1 === mounted ? 'Mounted: click to unmount' : 'Click to mount';
+      p.title = r.protected ? 'Protected: click to unprotect' : 'Click to protect';
+      m.onclick = e => { e.stopPropagation(); sel = i; mount(); };
+      p.onclick = e => { e.stopPropagation(); sel = i; protect(); };
+    }
+    row.append(m, p, el('div', r ? r.name : '<empty>', 'name'));
     row.onclick = () => { sel = i; render(); list.focus(); };
-    row.ondblclick = () => { sel = i; mount(); };
     list.append(row);
   });
 
@@ -119,16 +117,12 @@ function render() {
              ' · SHA-256 ', el('span', r.sha256, 'mono'));
 
   // Every button acts only on the selected row.
-  $('mount').disabled = busy || !r;
-  $('mount').textContent = r && sel + 1 === mounted ? 'Unmount' : 'Mount';
   $('download').disabled = busy || !r;
   $('upload').disabled = busy;
   $('delete').disabled = busy || !r;
   $('rename').disabled = busy || !r;
-  $('protect').disabled = busy || !r;
   $('restart').disabled = busy;
   formChanged();
-  $('protect').textContent = r && r.protected ? 'Unprotect' : 'Protect';
 }
 
 async function refresh() {
@@ -169,20 +163,18 @@ function mount() {
   const r = rows[sel];
   if (busy || !r) return;
   if (sel + 1 === mounted)
-    op('POST', '/eject', `Unmounted ${label(r)}; the drive is empty.`);
+    op('POST', '/eject', `Unmounted ${r.name}; the drive is empty.`);
   else
-    op('POST', `/mount/${sel + 1}`, `Mounted ${label(r)}.`);
+    op('POST', `/mount/${sel + 1}`, `Mounted ${r.name}.`);
 }
 
-$('mount').onclick = mount;
-
-$('protect').onclick = () => {
+function protect() {
   const r = rows[sel];
   if (!r || busy) return;
   const on = r.protected ? 0 : 1;
   op('POST', `/protect/${sel + 1}?on=${on}`,
-     on ? `${label(r)} is protected.` : `${label(r)} is unprotected.`);
-};
+     on ? `${r.name} is protected.` : `${r.name} is unprotected.`);
+}
 
 $('download').onclick = () => {
   const r = rows[sel];
@@ -194,8 +186,8 @@ $('download').onclick = () => {
 $('rename').onclick = () => {
   const r = rows[sel];
   if (!r || busy) return;
-  const now = label(r), ext = (r.name.match(/\.(dsk|do|woz)$/i) || [''])[0];
-  const name = prompt(`New name for ${now}` + (ext ? ` (stays ${ext})` : ''), now);
+  // The drive keeps the image's file type whatever extension is typed.
+  const now = r.name, name = prompt(`New name for ${now}`, now);
   if (name === null || !name.trim() || name.trim() === now) return;
   op('POST', `/rename/${sel + 1}?name=` + encodeURIComponent(name.trim()), `Renamed to ${name.trim()}.`);
 };
@@ -203,9 +195,9 @@ $('rename').onclick = () => {
 $('delete').onclick = () => {
   const r = rows[sel];
   if (!r || busy) return;
-  if (!confirm(`Delete ${label(r)}?` + (sel + 1 === mounted ? ' It is mounted; the drive will be empty.' : '')))
+  if (!confirm(`Delete ${r.name}?` + (sel + 1 === mounted ? ' It is mounted; the drive will be empty.' : '')))
     return;
-  op('DELETE', `/image/${sel + 1}`, `Deleted ${label(r)}.`);
+  op('DELETE', `/image/${sel + 1}`, `Deleted ${r.name}.`);
 };
 
 $('upload').onclick = () => { if (!busy) { $('file').value = ''; $('file').click(); } };
@@ -219,7 +211,7 @@ $('file').onchange = () => {
   if (f.size > MAX)
     return msg(`${f.name} is ${f.size.toLocaleString()} bytes; the drive holds images up to ${MAX.toLocaleString()}.`, 'bad');
   const r = rows[sel], row = sel + 1;
-  if (r && !confirm(`Replace ${label(r)} with ${f.name}?`)) return;
+  if (r && !confirm(`Replace ${r.name} with ${f.name}?`)) return;
 
   busy = true; render();
   const x = new XMLHttpRequest();
@@ -232,7 +224,7 @@ $('file').onchange = () => {
   x.onload = () => {
     let r = {};
     try { r = JSON.parse(x.responseText); } catch {}
-    if (x.status === 200 && r.ok) msg(`Stored ${r.name} in row ${r.row}.`, 'ok');
+    if (x.status === 200 && r.ok) msg(`Stored ${r.name}.`, 'ok');
     else msg('Upload failed: ' + (r.error || x.responseText || 'HTTP ' + x.status), 'bad');
     done();
   };
@@ -340,7 +332,6 @@ $('restart').onclick = async () => {
 $('list').onkeydown = e => {
   if (e.key === 'ArrowDown') { sel = Math.min(ROWS - 1, sel + 1); render(); e.preventDefault(); }
   else if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); render(); e.preventDefault(); }
-  else if (e.key === 'Enter') { mount(); e.preventDefault(); }
 };
 
 loadSettings();

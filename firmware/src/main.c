@@ -41,16 +41,17 @@ int main(void)
     net_init();
     diag_watchdog_start();
 
-    // LED heartbeat, timed from the main loop: 5 Hz while connecting to
-    // WiFi, 1 Hz once up. A steady LED, on or off, means the loop stopped.
-    // (The LED sits on the WiFi chip, so only send changes.)
+    // LED: solid on from power-on until joined to a WiFi network (and again
+    // whenever the link drops); 1 Hz blink while joined. Once joined, a
+    // steady LED means the main loop stopped. It can't light before
+    // cyw43_arch_init(): the LED sits on the WiFi chip, so only send changes.
     int led = -1;
     for (;;) {
         diag_feed();
         net_poll();
         bool busy = api_poll();
         uint32_t ds = (uint32_t)(time_us_64() / 100000);       // 100 ms units
-        int want = net_is_up() ? (ds % 10) < 5 : (int)(ds & 1);
+        int want = net_is_up() ? (ds % 10) < 5 : 1;
         if (want != led) {
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, want);
             led = want;

@@ -80,8 +80,8 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   stream straight to a free flash image space (16 KB RAM ring, TCP ack
   deferred until written; ~2 s per WOZ); the 140 KB upload RAM buffer is
   gone (RAM in use 114 KB).
-- **Image list GUI passed** 2026-11-13 (Barry). v0.5-list, branch
-  `m3c-image-list`. Details: 10 fixed rows (Barry's design: name without extension, DSK/WOZ,
+- **Image list GUI passed** 2026-11-13 (Barry; superseded by the carousel GUI
+  below). v0.5-list, branch `m3c-image-list`. Details: 10 fixed rows (Barry's design: name without extension, DSK/WOZ,
   bytes, M and W text tags, arrow cursor; buttons Mount/Download/Upload/
   Delete/Write/Mount, last two side by side; arrow keys + Enter; detail line for the selected row). Directory
   v2 (10 rows + mounted row; v1 migrates in place). Mount of an empty row =
@@ -89,6 +89,20 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   the selected row (Mount/Unmount, Write enable/protect). Mount/delete run in
   the main loop like uploads. Sticky mount across
   power cycles. Next: PIO player (milestones 4-5).
+- **Carousel GUI (v0.8-carousel, branch `gui-carousel`, 2026-11-14; awaiting
+  Barry's test):** simplification pass. User-facing name for the image
+  collection is the **carousel** (code/API keep "row"). Rows show the full
+  filename incl. extension; size and type columns gone (format stays on the
+  detail line). M/P tags and the Mount/Protect buttons replaced by per-row
+  controls that are both state and switch: ●/○ (click ○ = mount, click ● =
+  eject; not a native radio, whose arrow keys would mount on every press) and
+  🔒/🔓 (click toggles protect). Download/Upload/Rename/Delete act on the
+  highlighted row; ▶ cursor and Enter-to-mount dropped, arrow keys still
+  select. **LED:** solid on from power-on until joined to a WiFi network
+  (and again if the link drops), 1 Hz blink while joined. Lost on purpose:
+  a hang while connecting now looks like "connecting" (watchdog still
+  reboots). LED can't light before `cyw43_arch_init()`, i.e. dark for the
+  first ~2 s (USB console wait).
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
@@ -97,8 +111,8 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   two freezes (stack overflow during uploads), not proven.
 - **Unexplained hang (2026-11-13):** v0.2-m2 froze while idle (no USB serial,
   no picotool reset, no network) after Barry's M2 tests; cured by replug.
-  Cause unknown. Since v0.3-m3 the LED is a heartbeat (5 Hz connecting, 1 Hz
-  up; steady = main loop stopped) and boot waits 2 s for a USB console.
+  Cause unknown. Since v0.3-m3 the LED is a heartbeat (since v0.8: solid until
+  joined, 1 Hz up; steady while joined = main loop stopped) and boot waits 2 s for a USB console.
   Next time: capture the console before replugging.
 
 ## Toolchain (Mac, Intel, native x86_64)
@@ -260,9 +274,10 @@ field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
 | `POST /restart` | restart (refused while busy) |
 | `GET /image.woz` | test only: mounted .dsk encoded to WOZ 2 |
 
-**GUI vocabulary (decided 2026-11-13, revised same day):** the image
-the drive serves is the **mounted** image, tag **M**; a write-protected image
-gets tag **P** (button Protect/Unprotect; "W" was dropped as ambiguous). New
+**GUI vocabulary (decided 2026-11-13, revised 2026-11-14):** the collection
+of images is the **carousel**. The image the drive serves is the **mounted**
+image (● on its row; earlier tag M); a write-protected image shows 🔒
+(earlier tag P; "W" was dropped as ambiguous). New
 uploads arrive protected. **Users
 never see the word "slot"** (it means Apple slot / drive to
 them). Internally, a 256 KB flash area is an "image space".
