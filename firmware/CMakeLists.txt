@@ -84,6 +84,8 @@ add_executable(a2drive
     src/crc32.c
     src/status.c
     src/oled.c
+    src/player.c
+    src/streamtest.c
     src/third_party/dhcpserver/dhcpserver.c
     ${CMAKE_CURRENT_BINARY_DIR}/generated/index_html.c
 )
@@ -95,7 +97,7 @@ target_compile_options(a2drive PRIVATE -Wall -Wextra)
 # Vendored code: build as-is, without our warning set.
 set_source_files_properties(src/third_party/dhcpserver/dhcpserver.c PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.10.1-setup"
+    A2DRIVE_VERSION="0.11-m4"
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
     PICO_USE_STACK_GUARDS=1     # M33 MSPLIM: stack overflow faults at once (see diag.c)
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages
@@ -109,7 +111,12 @@ target_link_libraries(a2drive
     pico_flash
     pico_sha256
     hardware_i2c
+    hardware_pio
+    hardware_dma
 )
+
+pico_generate_pio_header(a2drive ${CMAKE_CURRENT_SOURCE_DIR}/src/disk2.pio)
+pico_generate_pio_header(a2drive ${CMAKE_CURRENT_SOURCE_DIR}/src/sample.pio)
 
 pico_enable_stdio_usb(a2drive 1)
 pico_enable_stdio_uart(a2drive 0)

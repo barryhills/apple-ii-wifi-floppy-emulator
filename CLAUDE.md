@@ -134,6 +134,22 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   checkbox for the password; Return moves to the next field, only the Save
   button saves (after a confirm); after Save an alert says what to do next
   (switch the Mac to the new network / open the new hostname).
+- **Milestone 4 passed** 2026-11-14 (v0.11-m4, branch `m4-bit-timing`).
+  Player: `src/disk2.pio` (program body unchanged from
+  RP2350-Floppy-Emulator, MIT; 16 PIO cycles/cell at 4 MHz, idle high, a 1
+  = 1 us low) + 2 DMA channels (`src/player.c`): track buffer = [cells-1,
+  cells/32+1 words MSB first], data channel -> TX FIFO, chains to a control
+  channel that rewrites the data channel's READ_ADDR_TRIG (TRANS_COUNT
+  reloads), so revolutions loop at exactly the track's cell count with no
+  CPU. Test `POST /test/stream?track=N[&cells=N]` (`src/streamtest.c`):
+  samples GP8 at 2 MHz into 64 KB by DMA (~1.3 rev), decodes edges, aligns
+  (sliding 1024-bit window; real-disk WOZ sync gaps are ambiguous) and
+  compares bit for bit across the wrap. Claude: DSK 35/35, WOZ (Boot!!.woz)
+  35/35, 14 revolution lengths not multiples of 32 (1,001-51,199): all
+  bit-exact, every gap an exact multiple of 4 us, every pulse 1 us. Barry:
+  Rigol scope on GP10 shows 1 us low pulses 4 us apart, 3.3 V. Bench jumper
+  is **physical pin 14 (GP10) -> pin 11 (GP8)**. Barry speaks physical pin
+  numbers: give pin numbers first.
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
@@ -246,7 +262,7 @@ not measured from Barry's parts.
 | ENABLE*, WRREQ* active low | verified | Apple dwg 050-0007-01 (overbars) |
 | WRPROT high = write-protected | from working code | tinyDiskII `floppy_main.cpp` |
 | Bit cell 4 µs | from working code | tinyDiskII, RP2350 project |
-| RDDATA pulse sense | **conflict** | tinyDiskII: idle low, 1 µs high pulse at end of cell. RP2350 project: idle high, 1 µs low pulse, "as a Disk II's read amplifier gives". Both reportedly work. Start with idle-high; it's a firmware constant. |
+| RDDATA pulse sense | **conflict; chose idle high** | tinyDiskII: idle low, 1 µs high pulse at end of cell. RP2350 project: idle high, 1 µs low pulse, "as a Disk II's read amplifier gives". Both reportedly work. Milestone 4 uses idle high (disk2.pio side-set); confirm on the //e in milestone 5. |
 | Write decode: a WRDATA transition in a cell = 1, none = 0; sync on D5 | from working code | tinyDiskII |
 | Apple write cell is ~3.958 µs; resync on each rising edge | from working code's README | vibr77 STM32 project |
 | Each track revolution must be exactly the track's bit count (no word padding) or nibble-counting loaders fail | from working code | RP2350 `src/disk2.pio` comments |

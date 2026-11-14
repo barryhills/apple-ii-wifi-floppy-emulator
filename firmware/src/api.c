@@ -45,6 +45,7 @@
 #include "diag.h"
 #include "http.h"
 #include "json.h"
+#include "streamtest.h"
 #include "status.h"
 #include "store.h"
 #include "woz.h"
@@ -69,7 +70,7 @@ static uint32_t   ring_head, ring_tail; // free-running byte counters
 static uint8_t    readers[STORE_SLOTS_MAX];    // downloads per image space
 static int        up_row;
 
-typedef enum { OP_NONE, OP_MOUNT, OP_DELETE, OP_WRITABLE, OP_RENAME, OP_SETTINGS } op_t;
+typedef enum { OP_NONE, OP_MOUNT, OP_DELETE, OP_WRITABLE, OP_RENAME, OP_SETTINGS, OP_STREAM } op_t;
 static op_t       op;
 static int        op_row;
 static bool       op_on;
@@ -485,6 +486,45 @@ static void run_op(void)
     cyw43_arch_lwip_end();
 }
 
+// ---------------------------------------------------------------- milestone 4 test
+
+// POST /test/stream?track=N: runs from the main loop without blocking it:
+// first pass starts the player and capture, later passes poll until the
+// report is ready (~0.3 s), then it is the reply.
+static bool stream_started;
+static uint32_t stream_cells;      // 0 = whole track
+
+static void stream_reply(int code, const char *body)
+{
+    cyw43_arch_lwip_begin();
+    if (op_conn) {
+        conn_t *c = op_conn;
+        op_conn = NULL;
+        http_respond_deferred(c, code, "application/json", body, strlen(body));
+    }
+    op = OP_NONE;
+    stream_started = false;
+    cyw43_arch_lwip_end();
+}
+
+static void poll_stream(void)
+{
+    static char report[1024];
+    if (!stream_started) {
+        char err[96];
+        if (streamtest_start((unsigned)op_row, stream_cells, err, sizeof err) != 0) {
+            static char e[sizeof err * 6];
+            json_escape(e, sizeof e, err);
+            snprintf(report, sizeof report, "{\"ok\":false,\"error\":\"%s\"}\n", e);
+            stream_reply(409, report);
+            return;
+        }
+        stream_started = true;
+    } else if (streamtest_poll(report, sizeof report)) {
+        stream_reply(200, report);
+    }
+}
+
 // ---------------------------------------------------------------- settings / restart
 
 bool api_busy(void) { return busy(); }
@@ -647,6 +687,15 @@ static void handle(conn_t *c)
         if (!get)
             return method_not_allowed(c, "GET");
         get_image(c, store_mounted());
+    } else if (strcmp(p, "/test/stream") == 0) {
+        char t[8] = "0";
+        if (!post)
+            return method_not_allowed(c, "POST");
+        char n[12] = "0";
+        http_query_param(c, "track", t, sizeof t);
+        http_query_param(c, "cells", n, sizeof n);
+        stream_cells = (uint32_t)strtoul(n, NULL, 10);
+        start_op(c, OP_STREAM, atoi(t));
     } else if (strcmp(p, "/image.woz") == 0) {
         if (!get)
             return method_not_allowed(c, "GET");
@@ -710,6 +759,10 @@ bool api_poll(void)
             ;
     }
 
+    if (op == OP_STREAM) {
+        poll_stream();
+        return true;
+    }
     if (op != OP_NONE) {
         run_op();
         return true;

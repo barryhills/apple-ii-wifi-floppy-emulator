@@ -1,0 +1,6 @@
+; Test capture (milestone 4): sample one pin once per PIO cycle, MSB first,
+; 32 samples per word (autopush). Run at 2 MHz: 8 samples per 4 us cell.
+.program sample
+.wrap_target
+    in pins, 1
+.wrap
