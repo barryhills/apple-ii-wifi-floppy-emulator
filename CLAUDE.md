@@ -10,14 +10,15 @@ controller card in Barry's Apple //e and behaves as a real 5.25" drive. Disk
 images are pushed to it over WiFi from the Mac (`curl`), so there is no SD card
 and no sneakernet. The //e runs stock DOS 3.3; nothing is patched on the Apple side.
 
-**Mental model: the vdisk is just a drive.** It is normally plugged in as
-**drive 2**. It answers ENABLE, follows the stepper phase lines, serves read bits
-and accepts write bits. It does not know or care whether DOS reached it through a
-boot, `CATALOG,D2` or a direct RWTS call. Avoid "PR#6 thinking": nothing about
-the design assumes booting from the vdisk.
+**Mental model: the vdisk is just a drive.** It can be plugged in as **drive 1
+or drive 2**; the design does not care which (Barry, 2026-11-13). It answers
+ENABLE, follows the stepper phase lines, serves read bits and accepts write
+bits: if an I/O comes its way, it processes it. It does not know or care whether
+DOS reached it through a boot, `CATALOG,D1`/`D2` or a direct RWTS call. Nothing
+in the design assumes either booting from the vdisk or not booting from it.
 
 Dev loop the project exists for: build on the Mac → `curl` push image →
-`BRUN PROG,D2` on the //e. No reboot.
+`BRUN PROG` from the vdisk (D1 or D2) on the //e. No reboot.
 
 ## Working agreements (how Barry wants to work)
 
@@ -228,7 +229,8 @@ field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
 - **Interim persistence rule:** one image, stored in flash, served at every
   power-on. Full persistence behaviour is deferred (see below).
 - **Network:** DHCP, mDNS name `a2drive.local` by default. **Barry renamed his
-  drive to `apple2vdisk.local`** (stored setting, 2026-11-13; IP on the home LAN).
+  drive to `vdisk.local`** (stored setting, 2026-11-13; earlier apple2vdisk;
+  IP on the home LAN).
   DHCP reservation as fallback;
   plain HTTP, no auth on the home LAN. WiFi is 2.4 GHz only (fine for Barry).
   A failed upload must leave the mounted image untouched (swap after complete).
@@ -292,8 +294,8 @@ and flash writes stall XIP, so core-1 code that runs during them must be in RAM.
 | 2 | Flash storage | push/pull/delete; SHA-256 matches on the Mac | no |
 | 3 | GCR encoder | Pico encodes the image and serves it back as WOZ; it boots/catalogs in a Mac emulator | no |
 | 4 | Bit timing | PIO stream on GP10 jumpered to a second Pico, captured bit-exact at 4 µs cells | no |
-| 5 | Read on the //e | `CATALOG,D2` lists the pushed image; `BLOAD`/`RUN` from D2 works | yes |
-| 6 | Writes | `SAVE`/`BSAVE ...,D2`; pull image; file present and image consistent on the Mac | yes |
+| 5 | Read on the //e | `CATALOG` lists the pushed image from the vdisk (as D1 or D2); `BLOAD`/`RUN` works; booting it as D1 works | yes |
+| 6 | Writes | `SAVE`/`BSAVE` to the vdisk; pull image; file present and image consistent on the Mac | yes |
 | 7+ | Knock, selector, button navigation, WOZ input | later | yes |
 
 Write decode can also be tested pre-board by feeding the milestone-4 capture
@@ -334,10 +336,27 @@ into the decoder.
   power-on. OLED in setup mode: "Join a2drive-setup / Open 192.168.4.1".
   Not built yet. Check pico-examples' AP DHCP/DNS servers before relying on
   them.
-- **Knock** — Apple selects drive 2, motor on (asserts ENABLE*), toggles a phase
-  pattern a normal seek never produces, motor off. Needs analysis of the RWTS
-  seek routine to pick a provably unused pattern. Knock steps must not move the
-  virtual head.
+- **//e configurator: reference design (agreed 2026-11-13; optional, OUT OF
+  SCOPE for now; replaces the "knock" idea):**
+  - Tracks beyond the image's last track (34 for DSK; up to 39 for a 40-track
+    WOZ) return no readable data, so a 40-track DOS gets I/O ERROR as on a
+    real 35-track drive.
+  - One track beyond any image (e.g. track 41) is the **post office**: RWTS
+    *writes* to its sectors deliver commands (mount row N, rename, protect,
+    delete); RWTS *reads* return replies (image list, mounted row, P flags,
+    last result). The drive synthesizes address fields for that track. No new
+    low-level protocol: the //e program just calls RWTS.
+  - The configurator is an ordinary image in a row, so it's optional. Load:
+    mount it (web/OLED), `BRUN` it from the vdisk.
+  - Guard: the post office only opens while the mounted row is flagged as
+    the configurator (GUI tag, e.g. "C"); mounting another row closes it.
+  - Barry (2026-11-13): DOS refuses I/O past track 34, so the configurator
+    must **bypass DOS** (call RWTS directly, or its own read/write routine).
+    No real floppy mechanism reaches track 41: it exists only in our virtual
+    drive. Expect to learn DOS/controller rules out there by experiment.
+  - To verify before building: what RWTS itself does above track 34; volume
+    check (IOB volume 0 = any). Barry's 40-track drives/DOS are out of scope.
+  - Barry thinks in hex at times ("track 23" = $23 = 35).
 - **Mac emulator (answered 2026-11-13):** Virtual ][ 12.0
   (`nl.xs4all.gp.virtualii`). Its built-in help says "supports both version 1
   and version 2 of the Woz file format". Milestone 3 targets WOZ 2.
