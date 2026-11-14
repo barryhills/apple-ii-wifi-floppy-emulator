@@ -59,6 +59,8 @@ dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 
 <section>
 <h2>Device</h2>
+<p id="setupnote" class="bad" hidden>Setup mode: enter your WiFi network and password below, then Save.
+The drive restarts and joins it.</p>
 <dl id="dev"></dl>
 <form id="setform" autocomplete="off">
   <label>Hostname<input id="f_host" maxlength="63" spellcheck="false"><span class="hint">.local</span></label>
@@ -138,6 +140,11 @@ async function refresh() {
       ['Last reset', s.last_reset], ['Stack headroom', s.stack_free + ' bytes'],
     ].flatMap(([k, v]) => [el('dt', k), el('dd', v)]));
     $('err').textContent = '';
+    if (s.setup_mode && $('setupnote').hidden) {
+      $('setupnote').hidden = false;
+      $('setupnote').scrollIntoView();
+      $('f_ssid').focus();
+    }
   } catch (e) {
     $('err').textContent = 'No response from the drive: ' + e.message;
   }

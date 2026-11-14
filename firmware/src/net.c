@@ -1,8 +1,16 @@
 // WiFi station management: connect, watch the link, reconnect with backoff.
 // Also brings up mDNS (<hostname>.local, _http._tcp), SNTP and the HTTP API.
+//
+// Setup mode (CLAUDE.md, "Network setup"): instead of joining a network the
+// drive is an open access point SETUP_SSID at 192.168.4.1 (the cyw43
+// driver's default AP address) with a DHCP server, serving the same page so
+// the user can enter WiFi settings. Entered at boot (main.c decides): UP+DOWN
+// held at power-on, no SSID configured, or a reboot requested by the
+// fallback below.
 
 #include <stdio.h>
 #include "pico/cyw43_arch.h"
+#include "hardware/watchdog.h"
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/apps/mdns.h"
@@ -11,12 +19,14 @@
 #include "net.h"
 #include "api.h"
 #include "clock.h"
+#include "diag.h"
+#include "third_party/dhcpserver/dhcpserver.h"
 
 #define CONNECT_TIMEOUT_MS  30000
 #define RETRY_DELAY_MS       5000
 #define RSSI_PERIOD_MS       5000
 
-typedef enum { NET_START, NET_CONNECTING, NET_UP, NET_BACKOFF } net_state_t;
+typedef enum { NET_START, NET_CONNECTING, NET_UP, NET_BACKOFF, NET_SETUP } net_state_t;
 
 static net_state_t state;
 static absolute_time_t deadline;
@@ -25,10 +35,22 @@ static int32_t rssi_cache;
 static bool rssi_valid;
 static char ip_str[16];
 
-// Settings come from config.c (stored in flash, else config.json). If stored
-// WiFi settings have not connected after FALLBACK_MS, use the built-in ones
-// for the rest of this boot, so a typo cannot strand the drive.
-#define FALLBACK_MS  120000
+// Settings come from config.c (stored in flash, else config.json). If the
+// drive has not joined within FALLBACK_MS (Barry: 1 minute) on the stored
+// settings, it tries the built-in ones for this boot; if those don't join
+// within FALLBACK_MS either (or are the same), it reboots into setup mode.
+// Only before the first successful join: a later link loss just retries.
+// A setup mode entered this way reboots to try again after SETUP_IDLE_MS with
+// nobody on the access point, so a router that was slow to come back after a
+// power cut doesn't leave the drive stranded in setup mode.
+#define FALLBACK_MS   60000
+#define SETUP_SSID    "a2drive-setup"
+#define SETUP_IP      "192.168.4.1"
+#define SETUP_IDLE_MS (5 * 60 * 1000)
+static absolute_time_t stage_start;     // current settings first tried
+static bool setup_auto;
+static absolute_time_t setup_idle_until, next_sta_check;
+static dhcp_server_t dhcp;
 #define cfg_ssid     config_ssid()
 #define cfg_password config_password()
 #define cfg_hostname config_hostname()
@@ -59,8 +81,30 @@ static void mdns_txt(struct mdns_service *service, void *userdata)
     mdns_resp_add_service_txtitem(service, "path=/", 6);
 }
 
-void net_init(void)
+static void start_setup(void)
 {
+    cyw43_arch_enable_ap_mode(SETUP_SSID, NULL, CYW43_AUTH_OPEN);
+    ip_addr_t ip, nm;
+    IP_ADDR4(&ip, 192, 168, 4, 1);
+    IP_ADDR4(&nm, 255, 255, 255, 0);
+    cyw43_arch_lwip_begin();
+    dhcp_server_init(&dhcp, &cyw43_state.netif[CYW43_ITF_AP], &ip, &nm);
+    api_init();
+    cyw43_arch_lwip_end();
+    state = NET_SETUP;
+    setup_idle_until = make_timeout_time_ms(SETUP_IDLE_MS);
+    next_sta_check = get_absolute_time();
+    printf("wifi: setup mode: join \"%s\" (open), then http://%s/\n", SETUP_SSID, SETUP_IP);
+}
+
+void net_init(bool setup, bool retry_when_idle)
+{
+    if (setup) {
+        setup_auto = retry_when_idle;
+        start_setup();
+        return;
+    }
+    stage_start = get_absolute_time();
     cyw43_arch_enable_sta_mode();   // creates the STA netif and starts DHCP
 
     cyw43_arch_lwip_begin();
@@ -96,11 +140,17 @@ static void start_connect(void)
 static void give_up(const char *why)
 {
     printf("wifi: %s; retrying in %d s\n", why, RETRY_DELAY_MS / 1000);
-    if (!ever_up && config_source() == CFG_STORED && config_builtin_wifi_differs() &&
-        to_ms_since_boot(get_absolute_time()) > FALLBACK_MS) {
-        printf("wifi: stored settings have not connected in %d s; using built-in settings\n",
-               FALLBACK_MS / 1000);
-        config_use_builtin_wifi();
+    if (!ever_up && absolute_time_diff_us(stage_start, get_absolute_time()) > FALLBACK_MS * 1000ll) {
+        if (config_source() == CFG_STORED && config_builtin_wifi_differs()) {
+            printf("wifi: stored settings have not connected in %d s; using built-in settings\n",
+                   FALLBACK_MS / 1000);
+            config_use_builtin_wifi();
+            stage_start = get_absolute_time();
+        } else {
+            printf("wifi: no network joined; rebooting into setup mode\n");
+            sleep_ms(50);                       // let the console drain
+            diag_reboot_into_setup();
+        }
     }
     cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
     ip_str[0] = 0;
@@ -149,13 +199,34 @@ void net_poll(void)
         if (time_reached(deadline))
             start_connect();
         break;
+
+    case NET_SETUP:
+        if (setup_auto && time_reached(next_sta_check)) {
+            next_sta_check = make_timeout_time_ms(5000);
+            int n = 0;
+            cyw43_wifi_ap_get_stas(&cyw43_state, &n, NULL);
+            if (n > 0) {
+                setup_idle_until = make_timeout_time_ms(SETUP_IDLE_MS);
+            } else if (time_reached(setup_idle_until)) {
+                printf("wifi: setup mode unused for %d min; rebooting to try the network again\n",
+                       SETUP_IDLE_MS / 60000);
+                sleep_ms(50);
+                watchdog_reboot(0, 0, 0);
+                for (;;)
+                    ;
+            }
+        }
+        break;
     }
 }
+
+bool net_setup_mode(void)     { return state == NET_SETUP; }
+const char *net_setup_ssid(void) { return SETUP_SSID; }
 
 bool net_is_up(void)          { return state == NET_UP; }
 const char *net_hostname(void){ return cfg_hostname; }
 const char *net_ssid(void)    { return cfg_ssid; }
-const char *net_ip_str(void)  { return state == NET_UP ? ip_str : ""; }
+const char *net_ip_str(void)  { return state == NET_UP ? ip_str : state == NET_SETUP ? SETUP_IP : ""; }
 
 const char *net_state_str(void)
 {
@@ -164,6 +235,7 @@ const char *net_state_str(void)
     case NET_CONNECTING: return "connecting";
     case NET_UP:         return "up";
     case NET_BACKOFF:    return "retry wait";
+    case NET_SETUP:      return "setup mode";
     }
     return "?";
 }

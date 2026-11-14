@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,3 +16,5 @@ void        diag_watchdog_start(void);  // once boot work is done
 void        diag_feed(void);            // every main-loop pass
 const char *diag_last_reset(void);
 uint32_t    diag_stack_free(void);      // bytes never touched since boot
+void        diag_reboot_into_setup(void);   // noreturn; scratch 0 carries the request
+bool        diag_setup_requested(void);     // this boot came from diag_reboot_into_setup()

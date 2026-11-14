@@ -40,7 +40,15 @@ int main(void)
     oled_init();
     store_init();
     config_load();
-    net_init();
+    // Setup mode (access point for entering WiFi settings): UP+DOWN held at
+    // power-on, no network configured, or the fallback in net.c asked for
+    // it. Only the last kind gives up after a while of nobody using it.
+    bool keys = oled_setup_keys_held(), none = config_ssid()[0] == 0;
+    bool fallback = diag_setup_requested();
+    if (keys || none || fallback)
+        printf("setup mode: %s\n", keys ? "UP+DOWN held at power-on" :
+                                    none ? "no WiFi network configured" : "no network joined");
+    net_init(keys || none || fallback, fallback && !keys && !none);
     diag_watchdog_start();
 
     // LED: solid on from power-on until joined to a WiFi network (and again

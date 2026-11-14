@@ -138,6 +138,17 @@ void oled_init(void)
 
 // ---------------------------------------------------------------- buttons
 
+// Boot-time check for setup mode: both held across three samples 10 ms apart.
+bool oled_setup_keys_held(void)
+{
+    for (int i = 0; i < 3; i++) {
+        if (gpio_get(BTN_UP) || gpio_get(BTN_DOWN))
+            return false;
+        sleep_ms(10);
+    }
+    return true;
+}
+
 enum { B_SELECT, B_UP, B_DOWN, B_N };
 static const uint btn_pin[B_N] = {BTN_SELECT, BTN_UP, BTN_DOWN};
 static bool btn_down[B_N];              // debounced state
@@ -206,6 +217,17 @@ static void set_note(const char *t)
 static void draw_home(void)
 {
     char s[COLS + 8];
+    image_info_t im;
+    if (net_setup_mode()) {
+        // Instructions only; a picker message briefly replaces the title.
+        put_line(0, time_reached(note_until) ? "WiFi setup mode" : note);
+        snprintf(s, sizeof s, "SSID: %s", net_setup_ssid());
+        put_line(1, s);
+        put_line(2, "Password: none");
+        snprintf(s, sizeof s, "http://%s", net_ip_str());
+        put_line(3, s);
+        return;
+    }
     snprintf(s, sizeof s, "%s.local", net_hostname());
     put_line(0, s);
     if (net_is_up())
@@ -214,7 +236,6 @@ static void draw_home(void)
         snprintf(s, sizeof s, "%s...", net_state_str());
     put_line(1, s);
     put_line(2, time_reached(note_until) ? "" : note);   // brief messages only
-    image_info_t im;
     put_line(3, store_image(&im) ? im.name : "(drive empty)");
 }
 

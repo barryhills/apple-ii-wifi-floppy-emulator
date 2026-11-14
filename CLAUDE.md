@@ -114,6 +114,21 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   hold repeats; SELECT mounts; 15 s idle -> home. Mount refused while the
   web API is busy (`api_busy()`). Breadboard: timing jumper GP10 (pin 14)
   -> GP8 (pin 11) for milestone 4.
+- **WiFi setup mode passed** 2026-11-14 (Barry; v0.10-setup). The drive
+  becomes an open access point, SSID `a2drive-setup`, at 192.168.4.1
+  (cyw43 default AP address, channel 3), with the pico-examples DHCP server
+  (`src/third_party/dhcpserver/`, MIT, unmodified); same web page, which
+  shows a setup note and focuses the WiFi field. Entered at boot only:
+  UP+DOWN held at power-on (read ~2 s in, after the USB console wait), no
+  SSID configured, or the fallback: stored settings 1 min (Barry) -> built-in
+  settings 1 min (if different) -> reboot into setup (request carried in
+  watchdog scratch 0). Only before the first join; later link loss retries.
+  Nothing is erased: a plain restart returns to normal. A fallback-entered
+  setup mode reboots to retry after 5 min with no client on the AP (router
+  slow after a power cut); button-entered never times out. OLED: "WiFi setup
+  mode / SSID: a2drive-setup / Password: none / http://192.168.4.1". No DNS
+  server (type the IP). macOS lists the SSID under "Other Networks", and
+  can take a few seconds to show it.
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
@@ -347,11 +362,11 @@ into the decoder.
   row; changes the display name, keeps the file type (download =
   newname + original extension); same character rules as uploads. Short
   names matter for the ~16-21 character OLED.
-- **Network setup (agreed 2026-11-13; Settings/Restart BUILT in v0.7 and tested, setup-mode AP not yet):**
+- **Network setup (agreed 2026-11-13; Settings/Restart BUILT in v0.7; setup-mode AP BUILT in v0.10, see Status):**
   Device window: info list, then always-visible fields (hostname, WiFi network,
   write-only password), then buttons Save (stores + restarts) · Restart · Cancel.
-  If stored WiFi settings don't connect within 120 s the drive falls back to
-  the built-in (config.json) network for that boot (tested: back in 134 s).
+  If stored WiFi settings don't connect within 60 s (was 120 s until v0.10)
+  the drive falls back to the built-in (config.json) network for that boot.
   Device window gets **Settings**
   (hostname, SSID, write-only password; Save & restart) and **Restart**
   (greyed during flash work). Settings stored in the reserved flash sector;

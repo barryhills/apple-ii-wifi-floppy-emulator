@@ -1,0 +1,4 @@
+DHCP server for the setup-mode access point.
+Copied unmodified from raspberrypi/pico-examples, pico_w/wifi/access_point/dhcpserver
+(originally MicroPython, Damien P. George). MIT licence: see LICENSE.
+Fetched 2026-11-14.
