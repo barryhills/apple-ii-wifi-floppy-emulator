@@ -25,6 +25,7 @@
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/structs/timer.h"
+#include "hardware/sync.h"
 
 #include "benchtest.h"
 #include "diag.h"
@@ -34,6 +35,8 @@
 #include "sample.pio.h"
 #include "store.h"
 #include "woz.h"
+#include "wrgen.pio.h"
+#include "crc32.h"
 
 #define CAP_PIN         PLAYER_PIN
 #define CAP_HZ          2000000
@@ -47,12 +50,12 @@
 #define PIN_ENABLE      6
 
 static uint32_t track_buf[PLAYER_WORDS(GCR_TRACK_BUF * 8)];
-static uint8_t  enc[GCR_TRACK_BUF];
+#define enc (drive_scratch())    // borrowed: tests hold the API busy, so no write-back runs
 static uint32_t cap[CAP_WORDS];
 static uint8_t  dec[MAX_DECODED / 8 + 1];
 
 static bool inited, running;
-static enum { T_STREAM, T_SEEK } kind;
+static enum { T_STREAM, T_SEEK, T_WRITE } kind;
 static PIO cpio;
 static uint csm, coff;
 static int cch = -1;
@@ -67,6 +70,8 @@ static uint32_t seek_steps, seek_ms;
 static uint32_t a_cell, a_cells, a_time;    // seek: core 1's angle anchor
 static int flash_writes = -1;               // seek: directory writes during capture, -1 = none asked
 static uint32_t flash_us, flash_loop_max_us;
+
+static int bail(void) { drive_scratch_release(); return -1; }
 
 static inline int bit_at(const uint8_t *b, uint32_t i) { return b[i >> 3] >> (7 - (i & 7)) & 1; }
 static inline int sample_at(uint32_t i) { return cap[i >> 5] >> (31 - (i & 31)) & 1; }
@@ -147,23 +152,23 @@ int benchtest_stream(unsigned track, uint32_t cells, uint32_t start, char *err, 
         return -1;
     }
     if (expected_bits((int)track * 4, err, errn) != 0)
-        return -1;
+        return bail();
     if (!trk_bits) {
         snprintf(err, errn, "track %u is empty in this image", track);
-        return -1;
+        return bail();
     }
     if (cells && cells < trk_cells)
         trk_cells = cells;      // test any revolution length: the first `cells` cells
     if (trk_cells < 1000 || trk_cells > GCR_TRACK_BUF * 8) {
         snprintf(err, errn, "track length %lu cells is out of range", (unsigned long)trk_cells);
-        return -1;
+        return bail();
     }
     if (start >= trk_cells) {
         snprintf(err, errn, "start must be below %lu", (unsigned long)trk_cells);
-        return -1;
+        return bail();
     }
     if (!init_once(err, errn))
-        return -1;
+        return bail();
 
     player_pack(track_buf, trk_bits, trk_cells);
     drive_suspend();
@@ -179,6 +184,28 @@ int benchtest_stream(unsigned track, uint32_t cells, uint32_t start, char *err, 
 }
 
 // ---------------------------------------------------------------- seek
+
+// The drive's own track at q, unpacked to MSB-first bytes in the scratch.
+static int pool_bits(int q, char *err, size_t errn)
+{
+    const uint32_t *t = drive_track_at(q);
+    trk_bits = NULL;
+    trk_cells = 0;
+    trk_no = (unsigned)(q + 1) / 4;
+    if (!t)
+        return 0;                                       // silence
+    uint32_t cells = t[0] + 1;
+    if (cells > GCR_TRACK_BUF * 8) {
+        snprintf(err, errn, "track of %lu cells is too long to check", (unsigned long)cells);
+        return -1;
+    }
+    uint8_t *b = enc;
+    for (uint32_t k = 0; k < (cells + 7) / 8; k++)
+        b[k] = (uint8_t)(t[1 + k / 4] >> (24 - 8 * (k % 4)));
+    trk_bits = b;
+    trk_cells = cells;
+    return 0;
+}
 
 static void phases(unsigned mask)
 {
@@ -230,10 +257,11 @@ int benchtest_seek(int q, bool flash, char *err, size_t errn)
     drive_status_t s;
     drive_get_status(&s);
     if (!s.loaded) {
-        snprintf(err, errn, "the drive is not serving an image%s%s", s.error[0] ? ": " : "", s.error);
+        snprintf(err, errn, "the drive is not serving an image%s%s", drive_error()[0] ? ": " : "",
+                 drive_error());
         return -1;
     }
-    if (expected_bits(q, err, errn) != 0 || !init_once(err, errn))
+    if (!init_once(err, errn))
         return -1;
 
     uint32_t steps0 = s.steps, t0 = timer_hw->timerawl;
@@ -253,6 +281,11 @@ int benchtest_seek(int q, bool flash, char *err, size_t errn)
     seek_steps = s.steps - steps0;
     seek_ms = (timer_hw->timerawl - t0) / 1000;
     seek_q = q;
+
+    // What the drive serves there now (the pool: after writes it differs
+    // from a fresh encoding of the image, as it should).
+    if (pool_bits(q, err, errn) != 0)
+        return -1;
 
     sleep_us(100);                      // core 1 has switched tracks
     drive_angle(&a_cell, &a_cells, &a_time);
@@ -288,8 +321,12 @@ int benchtest_seek(int q, bool flash, char *err, size_t errn)
 
 // ---------------------------------------------------------------- poll
 
+static bool write_poll(char *report, size_t n);
+
 bool benchtest_poll(char *report, size_t n)
 {
+    if (running && kind == T_WRITE)
+        return write_poll(report, n);
     if (!running || dma_channel_is_busy(cch))
         return false;
     pio_sm_set_enabled(cpio, csm, false);
@@ -426,6 +463,280 @@ bool benchtest_poll(char *report, size_t n)
         (unsigned long)pw[3], (unsigned long)pw[4], (unsigned long)pw[5],
         (unsigned long)pw[6], (unsigned long)pw[7], (unsigned long)pw_other,
         player_idle_high() ? "high" : "low");
+    printf("benchtest: %s", report);
+    drive_scratch_release();
+    return true;
+}
+
+// ---------------------------------------------------------------- write
+
+#define PIN_WRREQ       7
+#define TEST_WR_PIN     22          // physical pin 29: not connected on board rev B
+
+static PIO gpio_;
+static uint gsm, goff;
+static int gch = -1;
+static uint8_t new_data[256];
+static int w_track, w_sector, w_logical;
+static uint32_t w_saves0, w_writes0, w_fifo0, w_crc_expect, w_t0, w_cell_ns;
+static uint32_t w_pool_mask, w_late_cells;
+static bool w_pool_ok;
+static image_format_t w_fmt;
+
+static bool gen_init(char *err, size_t errn)
+{
+    if (gch >= 0)
+        return true;
+    if (!pio_claim_free_sm_and_add_program_for_gpio_range(&wrgen_program, &gpio_, &gsm, &goff,
+                                                          TEST_WR_PIN, 1, true)) {
+        snprintf(err, errn, "write generator: no free PIO state machine");
+        return false;
+    }
+    pio_gpio_init(gpio_, TEST_WR_PIN);
+    pio_sm_set_consecutive_pindirs(gpio_, gsm, TEST_WR_PIN, 1, true);
+    gch = dma_claim_unused_channel(true);
+    return true;
+}
+
+// Find the end of physical sector `sec`'s address field (just after the
+// epilogue's DE AA) in a served track: bit position, or -1.
+static int32_t addr_end(const uint32_t *t, int sec)
+{
+    uint32_t cells = t[0] + 1, reg = 0;
+    int h[3] = {0, 0, 0};
+    int state = 0, got = 0, vals[8], idx = 0;
+    for (uint32_t i = 0; i < 2 * cells + 64; i++) {
+        uint32_t p = i % cells;
+        reg = reg << 1 | (t[1 + (p >> 5)] >> (31 - (p & 31)) & 1);
+        if (!(reg & 0x80))
+            continue;
+        int b = (int)reg;
+        reg = 0;
+        if (state == 0) {
+            h[0] = h[1]; h[1] = h[2]; h[2] = b;
+            if (h[0] == 0xD5 && h[1] == 0xAA && h[2] == 0x96) { state = 1; idx = 0; }
+        } else if (state == 1) {
+            vals[idx++] = b;
+            if (idx == 8) {
+                got = ((vals[4] << 1) | 1) & vals[5];
+                state = got == sec ? 2 : 0;
+                idx = 0;
+                h[0] = h[1] = h[2] = 0;
+            }
+        } else {
+            if (++idx == 2)                     // DE AA
+                return (int32_t)((p + 1) % cells);
+        }
+    }
+    return -1;
+}
+
+int benchtest_write(int track, int sector, uint32_t cell_ns, uint32_t seed, char *err, size_t errn)
+{
+    if (running) {
+        snprintf(err, errn, "a test is already running");
+        return -1;
+    }
+    drive_status_t s;
+    drive_get_status(&s);
+    image_info_t im;
+    if (!s.loaded || !store_image(&im)) {
+        snprintf(err, errn, "the drive is not serving an image");
+        return -1;
+    }
+    if (!s.writable) {
+        snprintf(err, errn, "the mounted image is write-protected (unlock it to test)");
+        return -1;
+    }
+    if (track < 0 || track >= GCR_TRACKS || sector < 0 || sector > 15 ||
+        cell_ns < 3500 || cell_ns > 4500) {
+        snprintf(err, errn, "need track 0-34, sector 0-15 (physical), cell_ns 3500-4500");
+        return -1;
+    }
+    if (!init_once(err, errn) || !gen_init(err, errn))
+        return -1;
+
+    w_track = track; w_sector = sector; w_logical = gcr_phys_to_logical[sector];
+    w_cell_ns = cell_ns; w_fmt = im.format;
+    uint32_t x = seed * 2654435761u + 1;
+    for (int i = 0; i < 256; i++) {
+        x = x * 1103515245u + 12345u;
+        new_data[i] = (uint8_t)(x >> 16);
+    }
+    // The image as it should be after the write-back (.dsk): this sector replaced.
+    if (im.format == FMT_DSK) {
+        size_t off = (size_t)track * GCR_TRACK_DATA + 256u * (unsigned)w_logical;
+        uint32_t c = crc32_update(0, im.data, off);
+        c = crc32_update(c, new_data, 256);
+        w_crc_expect = crc32_update(c, im.data + off + 256, im.size - off - 256);
+    }
+
+    // The write, as DOS 3.3's RWTS makes it: 5 self-syncs, then the data
+    // field (D5 AA AD, 343 nibbles, DE AA EB), then FF. Borrow the data field
+    // from an encoded track whose sectors all hold new_data.
+    uint8_t *tmp = (uint8_t *)cap, *fld = (uint8_t *)cap + GCR_TRACK_DATA;
+    for (int k = 0; k < 16; k++)
+        memcpy(tmp + 256 * k, new_data, 256);
+    uint32_t fcells = (uint32_t)gcr_encode_track(fld, tmp, (unsigned)track, 254);
+    int32_t f0 = -1;
+    uint32_t reg = 0, seen = 0;
+    int b0 = 0, b1 = 0;
+    for (uint32_t i = 0; i < fcells && f0 < 0; i++) {
+        reg = reg << 1 | (uint32_t)bit_at(fld, i);
+        if (reg & 0x80) {
+            if (b0 == 0xD5 && b1 == 0xAA && reg == 0xAD && (int)seen++ == sector)
+                f0 = (int32_t)i - 23;
+            b0 = b1; b1 = (int)reg; reg = 0;
+        }
+    }
+    uint32_t nb = 0, lvl = 0;
+    memset(track_buf, 0, 512 * 4);
+#define LEVEL(v) do { lvl ^= (v); if (lvl) track_buf[nb >> 5] |= 1u << (31 - (nb & 31)); nb++; } while (0)
+    for (int k = 0; k < 4; k++) LEVEL(0);                       // idle before the first edge
+    for (int k = 0; k < 50; k++) LEVEL(k % 10 < 8);             // 5 self-syncs
+    for (uint32_t k = 0; k < 24 + 343 * 8 + 24; k++) LEVEL((uint32_t)bit_at(fld, (uint32_t)f0 + k));
+    for (int k = 0; k < 8; k++) LEVEL(1);                       // FF
+#undef LEVEL
+    uint32_t nwords = (nb + 31) / 32;
+
+    // Generator: one level per cell at cell_ns.
+    pio_sm_set_enabled(gpio_, gsm, false);
+    pio_sm_config c = wrgen_program_get_default_config(goff);
+    sm_config_set_out_pins(&c, TEST_WR_PIN, 1);
+    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&c, (float)clock_get_hz(clk_sys) * (float)cell_ns / 32e9f);
+    pio_sm_init(gpio_, gsm, goff, &c);
+    pio_sm_set_pins_with_mask(gpio_, gsm, 0, 1u << TEST_WR_PIN);
+    dma_channel_config d = dma_channel_get_default_config(gch);
+    channel_config_set_transfer_data_size(&d, DMA_SIZE_32);
+    channel_config_set_read_increment(&d, true);
+    channel_config_set_write_increment(&d, false);
+    channel_config_set_dreq(&d, pio_get_dreq(gpio_, gsm, true));
+    dma_channel_configure(gch, &d, &gpio_->txf[gsm], track_buf, nwords, true);   // prefills the FIFO
+
+    // Head to the track, drive selected, capture listening to the generator.
+    drive_set_wrdata_pin(TEST_WR_PIN);
+    for (int p = 0; p < 4; p++)
+        gpio_set_inover((uint)(PIN_PH0 + p), GPIO_OVERRIDE_LOW);
+    gpio_set_inover(PIN_ENABLE, GPIO_OVERRIDE_LOW);
+    seek_to(4 * track);
+    drive_get_status(&s);
+    w_saves0 = s.saves; w_writes0 = s.writes; w_fifo0 = s.fifo_full;
+
+    // Where to start: just past the sector's address field, as DOS does.
+    const uint32_t *t = drive_track_at(4 * track);
+    int32_t ae = t ? addr_end(t, sector) : -1;
+    int rc = 0;
+    if (ae < 0) {
+        snprintf(err, errn, "sector %d's address field not found on track %d", sector, track);
+        rc = -1;
+    } else {
+        uint32_t cells = t[0] + 1, target = ((uint32_t)ae + 8) % cells;
+        uint32_t ac, acs, at;
+        drive_angle(&ac, &acs, &at);
+        uint32_t now = timer_hw->timerawl;
+        uint32_t cur = (ac + (now - at) / 4) % acs;
+        uint32_t ahead = (target + cells - cur) % cells;
+        if (ahead < 500)
+            ahead += cells;                     // too close: next time round
+        sleep_us(ahead * 4 - 1000);
+        diag_feed();
+        uint32_t irq = save_and_disable_interrupts();
+        uint32_t deadline = timer_hw->timerawl + 3000;
+        do {
+            now = timer_hw->timerawl;
+            cur = (ac + (now - at) / 4) % acs;
+        } while (cur != target && (int32_t)(deadline - now) > 0);
+        gpio_set_inover(PIN_WRREQ, GPIO_OVERRIDE_LOW);
+        pio_sm_set_enabled(gpio_, gsm, true);
+        restore_interrupts(irq);
+        w_late_cells = (cur + cells - target) % cells;
+        // Let it play out, plus the last word's cells, then end the write.
+        while (dma_channel_is_busy(gch) || !pio_sm_is_tx_fifo_empty(gpio_, gsm))
+            tight_loop_contents();
+        sleep_us(40 * cell_ns / 1000);
+        gpio_set_inover(PIN_WRREQ, GPIO_OVERRIDE_NORMAL);
+    }
+    gpio_set_inover(PIN_ENABLE, GPIO_OVERRIDE_HIGH);
+    sleep_us(50);
+    for (int p = 0; p < 4; p++)
+        gpio_set_inover((uint)(PIN_PH0 + p), GPIO_OVERRIDE_NORMAL);
+    gpio_set_inover(PIN_ENABLE, GPIO_OVERRIDE_NORMAL);
+    pio_sm_set_enabled(gpio_, gsm, false);
+    drive_set_wrdata_pin(8);
+    if (rc)
+        return rc;
+
+    // The track in RAM must now hold the new sector and the others as before.
+    uint8_t *got = enc;                         // decode into the scratch
+    memset(got, 0, GCR_TRACK_DATA);
+    w_pool_mask = gcr_decode_track(t + 1, t[0] + 1, got);
+    w_pool_ok = (w_pool_mask & (1u << w_logical)) &&
+                memcmp(got + 256 * w_logical, new_data, 256) == 0;
+    if (im.format == FMT_DSK)
+        for (int k = 0; k < 16; k++)
+            if (k != w_logical && memcmp(got + 256 * k, im.data + (size_t)track * GCR_TRACK_DATA + 256 * k, 256))
+                w_pool_ok = false;
+    drive_scratch_release();
+    w_t0 = timer_hw->timerawl;
+    kind = T_WRITE;
+    running = true;
+    printf("benchtest: wrote track %d sector %d (%lu cells late)\n", track, sector,
+           (unsigned long)w_late_cells);
+    return 0;
+}
+
+static bool write_poll(char *report, size_t n)
+{
+    drive_status_t s;
+    drive_get_status(&s);
+    bool saved = s.saves > w_saves0 && s.dirty == 0;
+    if (!saved && timer_hw->timerawl - w_t0 < 8000000u)
+        return false;                           // waiting for the write-back
+    running = false;
+
+    // After the write-back: the stored image must be the old one with only
+    // this sector replaced (.dsk: CRC of the whole image); a WOZ's track
+    // must decode with the new sector.
+    image_info_t im;
+    bool flash_ok = false;
+    uint32_t crc = 0, fmask = 0;
+    if (saved && store_image(&im)) {
+        if (im.format == FMT_DSK) {
+            crc = crc32_update(0, im.data, im.size);
+            flash_ok = crc == w_crc_expect;
+        } else {
+            static woz_info_t w;
+            char e2[8];
+            const uint8_t *b;
+            uint32_t nbits;
+            if (woz_parse(im.data, im.size, &w, e2, sizeof e2) == 0 &&
+                woz_track_bits(&w, (unsigned)(4 * w_track), &b, &nbits) && nbits <= 65535) {
+                uint32_t *words = cap;
+                memset(words, 0, (nbits / 32 + 2) * 4);
+                for (uint32_t k = 0; k < (nbits + 7) / 8; k++)
+                    words[k / 4] |= (uint32_t)b[k] << (24 - 8 * (k % 4));
+                uint8_t *got = (uint8_t *)cap + 16384;
+                fmask = gcr_decode_track(words, nbits, got);
+                flash_ok = fmask == w_pool_mask && memcmp(got + 256 * w_logical, new_data, 256) == 0;
+            }
+        }
+    }
+    bool pass = w_pool_ok && saved && flash_ok && s.writes == w_writes0 + 1 && s.fifo_full == w_fifo0;
+    snprintf(report, n,
+        "{\"pass\":%s,\"test\":\"write\",\"track\":%d,\"sector\":%d,\"logical\":%d,"
+        "\"cell_ns\":%lu,\"measured_cell_ns\":%lu,\"late_cells\":%lu,\"writes\":%lu,"
+        "\"fifo_full\":%lu,\"pool_sectors\":\"%04lx\",\"pool_ok\":%s,\"saved\":%s,"
+        "\"save_ms\":%lu,\"save\":\"%s\",\"flash_ok\":%s,\"crc\":\"%08lx\",\"crc_expect\":\"%08lx\","
+        "\"flash_sectors\":\"%04lx\",\"format\":\"%s\"}\n",
+        pass ? "true" : "false", w_track, w_sector, w_logical, (unsigned long)w_cell_ns,
+        (unsigned long)s.write_cell_ns, (unsigned long)w_late_cells,
+        (unsigned long)(s.writes - w_writes0), (unsigned long)(s.fifo_full - w_fifo0),
+        (unsigned long)w_pool_mask, w_pool_ok ? "true" : "false", saved ? "true" : "false",
+        (unsigned long)((timer_hw->timerawl - w_t0) / 1000), drive_save_text(),
+        flash_ok ? "true" : "false", (unsigned long)crc, (unsigned long)w_crc_expect,
+        (unsigned long)fmask, store_format_name(w_fmt));
     printf("benchtest: %s", report);
     return true;
 }

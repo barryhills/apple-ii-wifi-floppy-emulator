@@ -62,6 +62,8 @@ static_assert(SLOT_COUNT >= STORE_ROWS + 1, "need a spare image space");
 static_assert(SLOT_COUNT <= STORE_SLOTS_MAX, "avoid masks are 32 bits");
 
 static dir_t cur;               // live directory; swapped under the lwIP lock
+static dir_t nd;                // the next directory being built (one at a time, main loop;
+                                // static: keep 1.1 KB off the shared stack)
 static int   cur_sector = -1;   // 0/1 = which copy holds cur, -1 = none valid
 static bool  verified[STORE_ROWS];
 static uint8_t secbuf[FLASH_SECTOR_SIZE] __attribute__((aligned(4)));
@@ -329,27 +331,64 @@ bool store_image(image_info_t *out)
     return store_row((int)cur.current, out);
 }
 
+// Pick a free image space, rotating from the last one written to spread
+// flash wear.
+static int last_slot = -1;
+static int prep_slot = -1;              // the space store_prepare_free works on
+static unsigned prep_next;              // its first sector not known to be erased
+
+static int pick_slot(uint32_t avoid_mask)
+{
+    for (int k = 1; k <= (int)SLOT_COUNT; k++) {
+        int s = (last_slot + k + (int)SLOT_COUNT) % (int)SLOT_COUNT;
+        if (!slot_in_use(&cur, (unsigned)s) && !(avoid_mask & (1u << s)))
+            return s;
+    }
+    return -1;
+}
+
+static bool sector_erased(uint32_t off)
+{
+    const uint32_t *p = (const uint32_t *)(XIP_BASE + off);
+    for (unsigned i = 0; i < FLASH_SECTOR_SIZE / 4; i++)
+        if (p[i] != 0xFFFFFFFFu)
+            return false;
+    return true;
+}
+
+bool store_prepare_free(uint32_t avoid_mask)
+{
+    int s = pick_slot(avoid_mask);
+    if (s < 0)
+        return true;                    // nothing to prepare
+    if (s != prep_slot) {
+        prep_slot = s;
+        prep_next = 0;
+    }
+    uint32_t base = SLOT_BASE + (uint32_t)s * SLOT_SIZE;
+    while (prep_next < SLOT_SIZE / FLASH_SECTOR_SIZE) {
+        uint32_t off = base + prep_next * FLASH_SECTOR_SIZE;
+        prep_next++;
+        if (!sector_erased(off)) {
+            flash_erase(off, FLASH_SECTOR_SIZE);
+            return false;
+        }
+    }
+    return true;
+}
+
 int store_write_begin(uint32_t size, uint32_t avoid_mask, char *err, size_t errn)
 {
     if (size == 0 || size > SLOT_SIZE) {
         snprintf(err, errn, "image must be 1 to %u bytes", (unsigned)SLOT_SIZE);
         return -1;
     }
-    // Pick a free image space, rotating from the last one written to spread
-    // flash wear.
-    static int last_slot = -1;
-    int slot = -1;
-    for (int k = 1; k <= (int)SLOT_COUNT; k++) {
-        int s = (last_slot + k + (int)SLOT_COUNT) % (int)SLOT_COUNT;
-        if (!slot_in_use(&cur, (unsigned)s) && !(avoid_mask & (1u << s))) {
-            slot = s;
-            break;
-        }
-    }
+    int slot = pick_slot(avoid_mask);
     if (slot < 0) {
         snprintf(err, errn, "no free image space (a download may be in progress; try again)");
         return -1;
     }
+    prep_slot = -1;                     // being written: no longer "prepared"
     last_slot = slot;
     memset(&wr, 0, sizeof wr);
     wr.active = true;
@@ -366,7 +405,8 @@ static int flush_sector(char *err, size_t errn)
     uint32_t at = wr.off + wr.flushed;
     size_t plen = (wr.staged + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1);
     memset(wbuf + wr.staged, 0xFF, FLASH_SECTOR_SIZE - wr.staged);
-    if (!flash_erase(at, FLASH_SECTOR_SIZE) || !flash_program(at, wbuf, plen)) {
+    if ((!sector_erased(at) && !flash_erase(at, FLASH_SECTOR_SIZE)) ||
+        !flash_program(at, wbuf, plen)) {
         snprintf(err, errn, "flash write failed at 0x%lx", (unsigned long)at);
         return -1;
     }
@@ -407,6 +447,12 @@ void store_write_abort(void)
 
 int store_write_finish(int row, const char *name, int64_t uploaded, char *err, size_t errn)
 {
+    return store_write_finish_flags(row, name, uploaded, 0, err, errn);
+}
+
+int store_write_finish_flags(int row, const char *name, int64_t uploaded, uint8_t flags,
+                             char *err, size_t errn)
+{
     if (!wr.active) {
         snprintf(err, errn, "no write in progress");
         return -1;
@@ -440,7 +486,6 @@ int store_write_finish(int row, const char *name, int64_t uploaded, char *err, s
         return -1;
     }
 
-    static dir_t nd;            // static: keep 1.1 KB off the shared stack
     nd = cur;
     dir_entry_t *e = &nd.e[row];
     memset(e, 0, sizeof *e);
@@ -449,6 +494,7 @@ int store_write_finish(int row, const char *name, int64_t uploaded, char *err, s
     e->format = (uint8_t)fmt;
     e->size = wr.size;
     e->uploaded = uploaded;
+    e->flags = flags;
     sha256_bytes(fl, wr.size, e->sha256);           // hash what is actually stored
     strncpy(e->name, name, IMAGE_NAME_MAX - 1);
     if (dir_commit(&nd, err, errn))
@@ -475,7 +521,6 @@ int store_mount(int row, char *err, size_t errn)
     }
     if (row == cur.current)
         return 0;
-    static dir_t nd;            // static: keep 1.1 KB off the shared stack
     nd = cur;
     nd.current = row;
     if (dir_commit(&nd, err, errn))
@@ -492,7 +537,6 @@ int store_delete(int row, char *err, size_t errn)
     }
     if (!cur.e[row].used)
         return 0;
-    static dir_t nd;            // static: keep 1.1 KB off the shared stack
     nd = cur;
     memset(&nd.e[row], 0, sizeof nd.e[row]);
     if (nd.current == row)
@@ -514,7 +558,6 @@ int store_set_writable(int row, bool writable, char *err, size_t errn)
                              : (cur.e[row].flags & (uint8_t)~IMG_FLAG_WRITABLE);
     if (flags == cur.e[row].flags)
         return 0;
-    static dir_t nd;            // static: keep 1.1 KB off the shared stack
     nd = cur;
     nd.e[row].flags = flags;
     if (dir_commit(&nd, err, errn))
@@ -535,7 +578,6 @@ int store_rename(int row, const char *name, char *err, size_t errn)
     }
     if (strcmp(name, cur.e[row].name) == 0)
         return 0;
-    static dir_t nd;            // static: keep 1.1 KB off the shared stack
     nd = cur;
     memset(nd.e[row].name, 0, IMAGE_NAME_MAX);
     strncpy(nd.e[row].name, name, IMAGE_NAME_MAX - 1);

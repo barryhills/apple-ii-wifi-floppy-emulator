@@ -59,7 +59,7 @@ size_t status_json(char *buf, size_t n)
                  im.verified ? "true" : "false");
     }
 
-    static char drive[900];
+    static char drive[1400];
     drive_status_json(drive, sizeof drive);
 
     int len = snprintf(buf, n,

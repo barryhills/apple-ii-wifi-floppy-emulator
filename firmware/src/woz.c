@@ -122,6 +122,18 @@ int woz_track_bits(const woz_info_t *w, unsigned q, const uint8_t **bits, uint32
     return 1;
 }
 
+int woz_trk_span(const woz_info_t *w, unsigned idx, size_t *off, uint32_t *nbits)
+{
+    for (unsigned q = 0; q < 160; q++) {
+        const uint8_t *b;
+        if (w->tmap[q] == idx && woz_track_bits(w, q, &b, nbits)) {
+            *off = (size_t)(b - w->file);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int woz_parse(const uint8_t *f, size_t len, woz_info_t *w, char *err, size_t errn)
 {
     memset(w, 0, sizeof *w);

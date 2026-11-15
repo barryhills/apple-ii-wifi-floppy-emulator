@@ -26,3 +26,14 @@ unsigned gcr_dsk_volume(const uint8_t *dsk);
 // Returns the track length in bits: exactly one revolution, no padding.
 size_t gcr_encode_track(uint8_t out[GCR_TRACK_BUF], const uint8_t *dsk_track,
                         unsigned track, unsigned volume);
+
+// Decode a 16-sector DOS 3.3 track from its bit stream: bit i is
+// words[i / 32] >> (31 - i % 32) (the player's layout without its count
+// word), cells bits in one revolution. Reads like the controller does
+// (shift bits in; a nibble is complete when its top bit is set) for two
+// revolutions, so fields that straddle the end of the track are found. For
+// each sector whose address field and data field (checksum) are good, the
+// 256 bytes go to out at its DOS logical position. Returns a mask of the
+// logical sectors decoded (bit n = logical sector n). Address-field track
+// and volume numbers are not checked: a sector is where the head found it.
+uint32_t gcr_decode_track(const uint32_t *words, uint32_t cells, uint8_t out[GCR_TRACK_DATA]);

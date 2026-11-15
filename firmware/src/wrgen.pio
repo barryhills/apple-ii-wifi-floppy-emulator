@@ -1,0 +1,8 @@
+; Bench test only: plays a WRDATA waveform, one level per write cell, from
+; a stream of levels (MSB first, autopull). 32 cycles per cell; the clock
+; divider sets the cell length (e.g. 3.91 us). Holds the last level when
+; the stream ends.
+.program wrgen
+.wrap_target
+    out pins, 1 [31]
+.wrap

@@ -161,12 +161,20 @@ static bool rename_target(int row, const char *raw, char *out, char *msg, size_t
     return true;
 }
 
-static uint32_t reader_mask(void)
+static uint32_t reader_mask(void)       // lwIP lock held
 {
     uint32_t m = 0;
     for (int i = 0; i < STORE_SLOTS_MAX; i++)
         if (readers[i])
             m |= 1u << i;
+    return m;
+}
+
+uint32_t api_reader_mask(void)          // main loop
+{
+    cyw43_arch_lwip_begin();
+    uint32_t m = reader_mask();
+    cyw43_arch_lwip_end();
     return m;
 }
 
@@ -201,7 +209,7 @@ static void get_image(conn_t *c, int row)
                           "no image mounted\n" : "that row is empty\n");
         return;
     }
-    char name[IMAGE_NAME_MAX], hex[65], extra[256];
+    static char name[IMAGE_NAME_MAX], hex[65], extra[256];     // static: lwIP context, serialized
     sanitize_name(name, im.name);
     sha256_hex(im.sha256, hex);
     snprintf(extra, sizeof extra,
@@ -297,7 +305,7 @@ static void get_image_woz(conn_t *c)
     w->track = -1;
     woz_header(w->hdr, woz_cache.bits, woz_cache.crc, creator, 1);
 
-    char name[IMAGE_NAME_MAX + 4], extra[200];
+    static char name[IMAGE_NAME_MAX + 4], extra[200];          // static: lwIP context, serialized
     sanitize_name(name, im.name);
     char *dot = strrchr(name, '.');
     if (dot && (ends_with_ci(dot, ".dsk") || ends_with_ci(dot, ".do")))
@@ -362,7 +370,7 @@ static void put_image(conn_t *c, int row)
         http_respond_text(c, 411, "Content-Length required\n");
         return;
     }
-    char raw[3 * IMAGE_NAME_MAX], msg[128];
+    static char raw[3 * IMAGE_NAME_MAX], msg[128];             // static: lwIP context, serialized
     if (!http_query_param(c, "name", raw, sizeof raw))
         raw[0] = 0;
     sanitize_name(up_name, raw);
@@ -409,7 +417,8 @@ static void get_images(conn_t *c)
             o += (size_t)snprintf(body + o, sizeof body - o, "%snull", sep);
             continue;
         }
-        char name[IMAGE_NAME_MAX * 6], hex[65], up[24] = "null";
+        static char name[IMAGE_NAME_MAX * 6], hex[65];         // static: lwIP context, serialized
+        char up[24] = "null";
         json_escape(name, sizeof name, im.name);
         sha256_hex(im.sha256, hex);
         if (im.uploaded)
@@ -494,7 +503,9 @@ static void run_op(void)
 // passes poll until the report is ready (~0.3 s; a seek blocks for its
 // steps first, <= ~0.7 s), then it is the reply. See benchtest.h.
 static bool stream_started;
-static bool test_seek;              // which test op OP_STREAM runs
+static int test_kind;               // which test OP_STREAM runs: 0 stream, 1 seek, 2 write
+static int test_sector;
+static uint32_t test_cell_ns, test_seed;
 static uint32_t stream_cells;       // 0 = whole track
 static uint32_t stream_start;
 static bool test_flash;             // seek: write flash during the capture
@@ -517,9 +528,10 @@ static void poll_stream(void)
     static char report[1024];
     if (!stream_started) {
         char err[96];
-        int rc = test_seek ? benchtest_seek(op_row, test_flash, err, sizeof err)
-                           : benchtest_stream((unsigned)op_row, stream_cells, stream_start,
-                                              err, sizeof err);
+        int rc = test_kind == 1 ? benchtest_seek(op_row, test_flash, err, sizeof err) :
+                 test_kind == 2 ? benchtest_write(op_row, test_sector, test_cell_ns, test_seed,
+                                                  err, sizeof err) :
+                 benchtest_stream((unsigned)op_row, stream_cells, stream_start, err, sizeof err);
         if (rc != 0) {
             static char e[sizeof err * 6];
             json_escape(e, sizeof e, err);
@@ -536,6 +548,10 @@ static void poll_stream(void)
 // ---------------------------------------------------------------- settings / restart
 
 bool api_busy(void) { return busy(); }
+bool api_store_busy(void)
+{
+    return up_state != UP_IDLE || (op != OP_NONE && op != OP_STREAM) || restart_pending;
+}
 
 static bool busy(void)
 {
@@ -707,7 +723,24 @@ static void handle(conn_t *c)
             return http_respond_text(c, 409, "busy; try again\n");
         stream_cells = (uint32_t)strtoul(n, NULL, 10);
         stream_start = (uint32_t)strtoul(st, NULL, 10);
-        test_seek = false;
+        test_kind = 0;
+        start_op(c, OP_STREAM, atoi(t));
+    } else if (strcmp(p, "/test/write") == 0) {
+        char t[8] = "", sec[8] = "", cn[8] = "3910", sd[12] = "1";
+        if (!post)
+            return method_not_allowed(c, "POST");
+        http_query_param(c, "track", t, sizeof t);
+        http_query_param(c, "sector", sec, sizeof sec);
+        http_query_param(c, "cell_ns", cn, sizeof cn);
+        http_query_param(c, "seed", sd, sizeof sd);
+        if (!t[0] || !sec[0])
+            return http_respond_text(c, 400, "need ?track=N&sector=N (physical) [&cell_ns=3910&seed=N]\n");
+        if (busy())
+            return http_respond_text(c, 409, "busy; try again\n");
+        test_kind = 2;
+        test_sector = atoi(sec);
+        test_cell_ns = (uint32_t)strtoul(cn, NULL, 10);
+        test_seed = (uint32_t)strtoul(sd, NULL, 10);
         start_op(c, OP_STREAM, atoi(t));
     } else if (strcmp(p, "/test/seek") == 0) {
         char q[8] = "", t[8] = "", f[4] = "0";
@@ -720,7 +753,7 @@ static void handle(conn_t *c)
             return http_respond_text(c, 400, "need ?q=quarter-track or ?track=N\n");
         if (busy())
             return http_respond_text(c, 409, "busy; try again\n");
-        test_seek = true;
+        test_kind = 1;
         test_flash = f[0] == '1';
         start_op(c, OP_STREAM, q[0] ? atoi(q) : 4 * atoi(t));
     } else if (strcmp(p, "/test/rdpulse") == 0) {
@@ -765,7 +798,7 @@ static void finish_upload(void)
     if (rc == 0) {
         image_info_t im;
         store_row(up_row, &im);
-        char name[IMAGE_NAME_MAX * 6], hex[65];
+        static char name[IMAGE_NAME_MAX * 6], hex[65];         // static: main loop only
         json_escape(name, sizeof name, im.name);
         sha256_hex(im.sha256, hex);
         snprintf(body, sizeof body,

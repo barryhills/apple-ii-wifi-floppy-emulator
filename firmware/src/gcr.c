@@ -136,3 +136,95 @@ unsigned gcr_dsk_volume(const uint8_t *dsk)
         return v[0x06];
     return GCR_DEFAULT_VOLUME;
 }
+
+// ---------------------------------------------------------------- decoder
+
+typedef struct {
+    const uint32_t *w;
+    uint32_t cells, pos, end;       // pos runs past cells (wraps), stops at end
+} nib_t;
+
+static int next_nib(nib_t *r)       // -1 at the end
+{
+    uint32_t reg = 0;
+    while (r->pos < r->end) {
+        uint32_t i = r->pos % r->cells;
+        r->pos++;
+        reg = reg << 1 | (r->w[i >> 5] >> (31 - (i & 31)) & 1);
+        if (reg & 0x80)
+            return (int)reg;
+    }
+    return -1;
+}
+
+static uint8_t inv62[256];          // disk byte -> 6-bit value + 1, 0 = invalid
+
+static int read_4and4(nib_t *r)
+{
+    int a = next_nib(r), b = next_nib(r);
+    if (a < 0 || b < 0)
+        return -1;
+    return ((a << 1) | 1) & b;
+}
+
+uint32_t gcr_decode_track(const uint32_t *words, uint32_t cells, uint8_t out[GCR_TRACK_DATA])
+{
+    if (!inv62[0x96])
+        for (int i = 0; i < 64; i++)
+            inv62[gcr62[i]] = (uint8_t)(i + 1);
+
+    nib_t r = { words, cells, 0, 2 * cells + 64 };
+    uint32_t found = 0;
+    int b0 = 0, b1 = 0, b2;
+    while ((b2 = next_nib(&r)) >= 0) {
+        if (!(b0 == 0xD5 && b1 == 0xAA && b2 == 0x96)) {
+            b0 = b1;
+            b1 = b2;
+            continue;
+        }
+        b0 = b1 = 0;
+        // Address field [BAD]: vol trk sec chk, 4-and-4.
+        int vol = read_4and4(&r), trk = read_4and4(&r), sec = read_4and4(&r),
+            chk = read_4and4(&r);
+        if (vol < 0 || trk < 0 || sec < 0 || chk < 0 || (vol ^ trk ^ sec ^ chk) != 0 ||
+            sec >= GCR_SECTORS)
+            continue;
+        // Data prologue within a few dozen nibbles (gap 2), not past another
+        // address field.
+        int p0 = 0, p1 = 0, p2, ok = 0;
+        for (int k = 0; k < 64 && (p2 = next_nib(&r)) >= 0; k++) {
+            if (p0 == 0xD5 && p1 == 0xAA && (p2 == 0xAD || p2 == 0x96)) {
+                ok = p2 == 0xAD;
+                break;
+            }
+            p0 = p1;
+            p1 = p2;
+        }
+        if (!ok)
+            continue;
+        // 342 values + checksum, XOR chained [BAD]; layout per [D2W].
+        static uint8_t v[342];          // static: main-loop only; keep it off the 4 KB stack
+        uint8_t prev = 0;
+        int bad = 0;
+        for (int i = 0; i < 343 && !bad; i++) {
+            int n = next_nib(&r);
+            if (n < 0 || !inv62[n]) {
+                bad = 1;
+                break;
+            }
+            uint8_t x = (uint8_t)(inv62[n] - 1) ^ prev;
+            if (i < 342)
+                v[i] = prev = x;
+            else if (x != 0)
+                bad = 1;                    // checksum: last value XOR chain = 0
+        }
+        if (bad)
+            continue;
+        static const uint8_t swap2[4] = { 0, 2, 1, 3 };
+        uint8_t *dst = out + 256u * gcr_phys_to_logical[sec];
+        for (int j = 0; j < 256; j++)
+            dst[j] = (uint8_t)(v[86 + j] << 2 | swap2[(v[j % 86] >> (2 * (j / 86))) & 3]);
+        found |= 1u << gcr_phys_to_logical[sec];
+    }
+    return found;
+}

@@ -190,6 +190,42 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   880 B before `-fconserve-stack` and a streaming 6-and-2 encoder). Boot to
   serving ~3 s (2 s USB console wait; the //e boot ROM just retries).
   **Barry's milestone 5 test:** see the end of this file's milestone table.
+- **Milestone 6 firmware built 2026-11-15 (v0.13-m6, branch `m6-writes`);
+  awaiting the //e.** Write path: `src/wrcap.pio` times WRDATA transitions
+  (150 MHz, 75 counts/us, +2 counts per edge for its own overhead); core 1
+  drains it every pass and `src/wrdec.h` turns intervals into cells with an
+  adaptive cell length (starts 3.93 us, follows 1-3-cell intervals; the //e
+  writes ~3.91 us cells). Bits go into the RAM track under the head from
+  the cell under the head at WRREQ*, one track cell per written cell (2%
+  longer than a real head would lay them; harmless, ends well inside gap 3).
+  Writes only while ENABLE*+WRREQ* low, the head on data and the image
+  writable: WRPROT = row locked OR WOZ INFO write-protected OR nothing
+  served. **Gap resync:** Virtual ][ WOZ gaps are plain 8-bit FFs (gap 2 =
+  72 cells, gap 3 = 120); a write ending mid-run misframed the next
+  sector's address field (found by the bench test); core 1 now rewrites an
+  all-1s run that runs into D5 AA as 10-bit self-syncs ending at the D5.
+  Write-back (core 0, `drive.c`): 500 ms after the last write, or at once
+  before a mount change, the whole image is rewritten into a free image
+  space and the directory switched (power-cut safe); per-track generation
+  counters (odd = being written) so writes during a save are never lost;
+  .dsk takes the sectors `gcr_decode_track` finds (a sector that no longer
+  decodes keeps its old bytes; counted as lost_sectors); WOZ takes the bits
+  and a new CRC. Row keeps name and lock; "uploaded" becomes the save time.
+  Idle time pre-erases the next free image space (one 4 KB sector per
+  250 ms; writes skip erased sectors): a save then takes ~0.4 s, ~1.5-2.6 s
+  if not yet erased. Tests (Claude): host `tools/host/gcrdec_test.c`
+  (encode/decode all tracks, rotated, damaged, DOS-style rewrite),
+  `tools/host/wrdec_test.c` (cells 3.85-4.05 us, +-0.5 us edge jitter: 0
+  errors); device `/test/write` on .dsk and WOZ, cells 3.85-4.05 us, first
+  and last sectors, adjacent/repeat writes: RAM track and stored image
+  (whole-image CRC) correct, other sectors untouched. RAM: heap 19.7 KB
+  static headroom (16 KB idle, 12 KB under load); core-0 stack low-water
+  ~1.5 KB under load (status struct strings moved out, handler buffers made
+  static, largest frame now 416 B, bench only).
+  `/status` drive object adds `pins` (raw levels of every connector signal
+  at the Pico: bring-up aid), writable, writing, writes, write_cell_ns,
+  dirty_tracks, saves, save_failures, lost_sectors, gap_resyncs, save.
+  OLED: "Track 17  ON W" while writing, "*" while unsaved.
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
@@ -304,6 +340,7 @@ not measured from Barry's parts.
 | Bit cell 4 µs | from working code | tinyDiskII, RP2350 project |
 | RDDATA pulse sense: **idle low, 1 µs high pulse** (since v0.12) | primary source | MC3470 data sheet (Motorola, bitsavers `components/motorola/_dataSheets/MC3470.pdf`) Fig. 28 "Digital Output": low with a positive pulse per flux peak; Apple dwg 050-0007-01: MC3470 pin 10 → 74LS125 (non-inverting) → pin 16. Agrees with tinyDiskII and SDISK II. RP2350 project uses idle high (both reportedly work: the card likely reacts to one edge). Done as a GPIO output invert on GP10; `/test/rdpulse` flips it. Confirm on the //e. |
 | Write decode: a WRDATA transition in a cell = 1, none = 0; sync on D5 | from working code | tinyDiskII |
+| Our write decode: interval between transitions → n cells (n−1 zeros + 1), adaptive cell length | design | `src/wrdec.h`, host-tested 3.85–4.05 µs |
 | Apple write cell is ~3.958 µs; resync on each rising edge | from working code's README | vibr77 STM32 project |
 | Each track revolution must be exactly the track's bit count (no word padding) or nibble-counting loaders fail | from working code | RP2350 `src/disk2.pio` comments |
 | Head tracking: one-hot next phase = +1 half track, previous = −1, opposite/same = none; track = half-track/2 | from working code | tinyDiskII, SDISK II (quarter-track counter 0–139) |
@@ -355,7 +392,7 @@ order (only a host-test scenario depends on it).
 | `POST /mount/N` | mount row N (an empty row is refused, 409) |
 | `POST /eject` | unmount: drive empty |
 | `POST /rename/N?name=X` | rename row N; keeps the file type (a typed .dsk/.do/.woz is dropped) |
-| `POST /protect/N?on=1\|0` | protect (P) / unprotect row N (stored; honoured from milestone 6) |
+| `POST /protect/N?on=1\|0` | protect / unprotect row N (WRPROT and the write gate follow it, v0.13) |
 | `GET /image` | download the mounted image |
 | `GET /status` | device JSON incl. mounted_row and mounted image |
 | `GET /settings` | hostname, SSID, password_set, source (never the password) |
@@ -365,6 +402,7 @@ order (only a host-test scenario depends on it).
 | `POST /test/stream?track=N[&start=C][&cells=N]` | bench: core 0 plays a track from cell C (drive suspended), captured on GP10 and checked bit for bit |
 | `POST /test/seek?q=N\|track=N[&flash=1]` | bench: steps the running drive by GPIO input override, checks head, data, angle; flash=1 writes the directory twice during the capture |
 | `POST /test/rdpulse?idle=low\|high` | RDDATA sense until restart |
+| `POST /test/write?track=T&sector=S[&cell_ns=3910][&seed=N]` | bench: writes physical sector S like DOS via a test PIO on GP22 (unconnected); checks RAM track, then the saved image. CHANGES THE MOUNTED IMAGE (use a scratch row) |
 
 `/status` has a `drive` object: serving, enabled, track (e.g. 17.25),
 quarter_track, on_data, steps, selects, load_ms, loop_max_us, rddata_idle,
@@ -411,6 +449,7 @@ locked out** (`PICO_FLASH_ASSUME_CORE1_SAFE=1`): flash writes only mask core
 | 5 | Read on the //e | `CATALOG` lists the pushed image from the vdisk (as D1 or D2); `BLOAD`/`RUN` works; booting it as D1 works | yes |
 | 5 (firmware built) | Barry's test: //e off, meter J1/ribbon (pin 1 GND, pin 11 +5 V), plug in as D2 first; power on; OLED should show "Track 0"; `CATALOG,D2` (head moves: OLED shows track and ON); `BRUN`/`RUN`; then as D1: boot. If nothing reads: `curl -X POST 'http://vdisk.local/test/rdpulse?idle=high'` and retry (then tell Claude) | yes |
 | 6 | Writes | `SAVE`/`BSAVE` to the vdisk; pull image; file present and image consistent on the Mac | yes |
+| 6 (firmware built) | Barry's test: unlock a scratch row, mount it; `SAVE`/`BSAVE` a file; wait for the drive light to go off (~1 s) + ~1 s; `CATALOG`; download the image; open it in CiderPress2 / Virtual ][. `/status` drive.write_cell_ns shows the //e's real write cell | yes |
 | 7+ | Knock, selector, button navigation, WOZ input | later | yes |
 
 Write decode can also be tested pre-board by feeding the milestone-4 capture

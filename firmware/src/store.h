@@ -60,6 +60,16 @@ const char *store_format_name(image_format_t f);    // "dsk", "woz1", "woz2"
 int  store_write_begin(uint32_t size, uint32_t avoid_mask, char *err, size_t errn);
 int  store_write_chunk(const uint8_t *data, size_t n, char *err, size_t errn);
 int  store_write_finish(int row, const char *name, int64_t uploaded, char *err, size_t errn);
+// The same, but the row keeps the given flags (store_write_finish clears
+// them: new uploads arrive protected). For writing back what the Apple
+// wrote into the mounted image.
+int  store_write_finish_flags(int row, const char *name, int64_t uploaded, uint8_t flags,
+                              char *err, size_t errn);
+// True if every byte of the free image space the next store_write_begin
+// would pick is erased; else erase one more 4 KB sector of it (~50 ms) and
+// return false. Lets idle time prepare a space, so a later write-back only
+// programs (store_write_chunk skips erasing sectors already erased).
+bool store_prepare_free(uint32_t avoid_mask);
 void store_write_abort(void);
 
 int  store_mount(int row, char *err, size_t errn);   // -1 = eject; an empty row is refused

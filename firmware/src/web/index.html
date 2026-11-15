@@ -19,6 +19,7 @@ section{background:var(--card);border:1px solid var(--line);border-radius:10px;p
 .row.sel{background:var(--sel)}
 .row.empty .name{color:var(--mut);font-weight:400}
 .tog{text-align:center}.tog.off{opacity:.3}.tog:hover{opacity:1}
+.tog.locked{filter:brightness(0)}   /* locked: the emoji as a pure black silhouette */
 .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #detail{color:var(--mut);font-size:13px;margin:12px 2px 0;min-height:1.4em;overflow-wrap:anywhere}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
@@ -100,7 +101,7 @@ function render() {
     const row = el('div', '', 'row' + (i === sel ? ' sel' : '') + (r ? '' : ' empty'));
     // The mount marker and the lock are both the state and the control.
     const m = el('div', r ? (i + 1 === mounted ? '●' : '○') : '', 'tog');
-    const p = el('div', r ? (r.protected ? '🔒' : '🔓') : '', 'tog' + (r && !r.protected ? ' off' : ''));
+    const p = el('div', r ? (r.protected ? '🔒' : '🔓') : '', 'tog' + (r && !r.protected ? ' off' : r ? ' locked' : ''));
     if (r) {
       m.title = i + 1 === mounted ? 'Mounted: click to unmount' : 'Click to mount';
       p.title = r.protected ? 'Protected: click to unprotect' : 'Click to protect';
@@ -135,7 +136,11 @@ function driveText(d) {
   if (d.error) return 'not serving: ' + d.error;
   const on = d.enabled ? ' · ON' : '';
   if (!d.serving) return 'empty, head on track ' + d.track + on;
-  return 'Track ' + d.track + (d.on_data ? '' : ' (no data here)') + on;
+  let t = 'Track ' + d.track + (d.on_data ? '' : ' (no data here)') + on;
+  if (d.writing) t += ' · writing';
+  else if (d.dirty_tracks) t += ' · unsaved changes';
+  if (d.save) t += ' · ' + d.save;
+  return t;
 }
 
 async function refresh() {

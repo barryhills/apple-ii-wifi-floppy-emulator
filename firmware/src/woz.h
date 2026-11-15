@@ -38,6 +38,10 @@ int  woz_parse(const uint8_t *f, size_t len, woz_info_t *w, char *err, size_t er
 // Bit stream for quarter track q (0-159). False if that position is empty.
 int  woz_track_bits(const woz_info_t *w, unsigned q, const uint8_t **bits, uint32_t *nbits);
 
+// Where TRK entry idx's bit stream lives in the file: byte offset and bit
+// count. False if the entry is empty or invalid.
+int  woz_trk_span(const woz_info_t *w, unsigned idx, size_t *off, uint32_t *nbits);
+
 // Encode a whole .dsk image: fills bits[] and returns the file CRC.
 // scratch must hold WOZ_TRACK_BYTES.
 uint32_t woz_prepare(const uint8_t *dsk, uint32_t bits[GCR_TRACKS],

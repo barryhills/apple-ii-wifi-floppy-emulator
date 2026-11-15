@@ -1,0 +1,29 @@
+; Disk II write capture: time the intervals between WRDATA transitions.
+;
+; X counts down once per 2 PIO cycles while the JMP pin (WRDATA) holds its
+; level; at each change the count so far, ~X, is pushed (noblock: core 1
+; drains the 8-deep joined FIFO far faster than the >= 3.9 us edges come)
+; and counting restarts. Run at the system clock (150 MHz): 75 counts per
+; microsecond. The edge-handling instructions add a cycle or two per
+; interval (~10 ns), negligible against a 3.9 us cell. After 2^32 counts
+; (57 s) without an edge, X runs out and a spurious interval is pushed;
+; core 1 only listens while the Apple is writing.
+.program wrcap
+public start:
+    mov x, ~null
+low_wait:                       ; pin low: 2 cycles per count
+    jmp pin low_edge
+    jmp x-- low_wait
+low_edge:
+    mov isr, ~x
+    push noblock
+    mov x, ~null
+high_wait:                      ; pin high: 2 cycles per count
+    jmp pin high_cont
+    jmp high_edge
+high_cont:
+    jmp x-- high_wait
+high_edge:
+    mov isr, ~x
+    push noblock
+                                ; wraps to start

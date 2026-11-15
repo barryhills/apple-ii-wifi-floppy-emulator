@@ -25,4 +25,15 @@
 
 int  benchtest_stream(unsigned track, uint32_t cells, uint32_t start, char *err, size_t errn);
 int  benchtest_seek(int q, bool flash, char *err, size_t errn);
+// write (milestone 6): with the drive running and the mounted image
+//   unlocked, writes physical sector `sector` of `track` with 256
+//   pseudo-random bytes (from seed) the way DOS 3.3 does: a test PIO plays
+//   the WRDATA waveform (5 self-syncs + data field, write cell cell_ns) on
+//   GP22 (unconnected) and the write capture listens there; the head is
+//   stepped and WRREQ*/ENABLE* driven by input override; the write starts
+//   just past the sector's address field. Checks the RAM track (new sector,
+//   others unchanged), then waits for the write-back and checks the stored
+//   image (.dsk: whole-image CRC = old image with that sector replaced; WOZ:
+//   the track decodes with the new sector). CHANGES THE MOUNTED IMAGE.
+int  benchtest_write(int track, int sector, uint32_t cell_ns, uint32_t seed, char *err, size_t errn);
 bool benchtest_poll(char *report, size_t n);    // true when the report is ready
