@@ -27,6 +27,7 @@
 #include "font5x7.h"
 #include "api.h"
 #include "net.h"
+#include "drive.h"
 #include "oled.h"
 #include "store.h"
 
@@ -246,7 +247,9 @@ static void draw_home(void)
     else
         snprintf(s, sizeof s, "%s...", net_state_str());
     put_line(1, s);
-    put_line(2, time_reached(note_until) ? "" : note);   // brief messages only
+    if (time_reached(note_until))
+        drive_oled_line(s, sizeof s);           // head position, ON while selected
+    put_line(2, time_reached(note_until) ? s : note);   // brief messages win
     put_line(3, store_image(&im) ? im.name : "(drive empty)");
 }
 

@@ -37,10 +37,11 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
 - Straight talk, no padding. Barry is a retired OS-kernel engineer; he reads C.
 - Ask before git commits/pushes; branch before committing to main.
 
-## Status (as of 2026-11-14)
+## Status (as of 2026-11-15)
 
 - **Board rev B ordered** from JLCPCB (5 bare boards, 2-layer, 1.6 mm, invoice
-  2026-11-14, ~$40 all in). Expect them roughly a week later.
+  2026-11-14, ~$40 all in). In the mail as of 2026-11-15. Barry is
+  breadboarding U1/U2 meanwhile.
 - **Parts on order (Amazon):** SN74LVC245AN (DIP-20), 2x10 shrouded box header,
   1N5817.
 - **Barry already has:** Raspberry Pi Pico 2 W (x2+, headers pre-soldered),
@@ -158,15 +159,37 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   2/4/6/8 phases, 10 WRREQ*, 14 ENABLE*, 16 RDDATA, 18 WRDATA, 20 WRPROT,
   11 +5V, 1 GND); **leave pins 9, 13, 15, 17, 19 (+/-12 V) empty**; meter
   pin 1 = GND and pin 11 = +5 V before plugging into the //e.
-  **Milestone 5 firmware to write (on Barry's go, tested first on the //e):**
-  core 1 loop (ENABLE*, phase lines -> half-track, repoint the player;
-  shares nothing with core 0, runs from RAM since flash writes stall XIP;
-  call `flash_safe_execute_core_init()`); encode the whole .dsk at mount
-  (35 x ~6.3 KB, ~220 KB RAM) so a head step is only a DMA repoint, WOZ
-  tracks looked up; ENABLE* gating; WRPROT on GP11 (protected until
-  milestone 6). Open: RDDATA pulse sense on the real controller (idle high
-  chosen); new track starts at cell 0 (fine for DOS; angular position is a
-  later WOZ-fidelity item); writes need edge resync (//e cell ~3.958 us).
+  Milestone 5 firmware: built 2026-11-15, next item. Still open for
+  milestone 6: writes need edge resync (//e cell ~3.958 us).
+- **Milestone 5 firmware built 2026-11-15 (v0.12-m5, branch
+  `m5-read-on-iie`); awaiting Barry's //e test.** Barry said proceed
+  (2026-11-15). Core 1 runs the drive (`src/drive.c`), entirely from RAM:
+  ENABLE*, phases -> head model (`src/stepper.h`), player repointed on a head
+  move, WRPROT high (protected until milestone 6). Core 0 builds every track
+  of the mounted image into a 256 KB RAM pool at mount/boot (DSK: GCR encode,
+  ~165 ms; WOZ: copy, ~22 ms) and re-builds when the mounted row or its image
+  space changes. **RDDATA is now idle low, 1 us high pulse** (see protocol
+  table); `POST /test/rdpulse?idle=high` flips it until restart if the //e
+  disagrees. Head model: vector sum of energized magnets, quarter tracks
+  0-159, a phase state must hold 100 us to move the head (software releasing
+  a quarter-track hold one phase at a time must not snap it; found by the
+  bench test). The disk's angle carries across head moves (new track starts
+  at the same fraction of a revolution; player starts mid-revolution).
+  DSK: track t at quarter tracks 4t-1..4t+1, half-track positions silent;
+  address-field volume = the VTOC's ($06) if the VTOC looks valid, else 254.
+  Claude's tests (no wiring: a PIO samples GP10 itself; phases/ENABLE* driven
+  by GPIO *input override*): stepper host test (`tools/host/stepper_test.c`:
+  exhaustive vs float model, DOS seeks with/without overlap, recalibrate from
+  every position, timing); stream test bit-exact incl. mid-revolution starts
+  and odd lengths; seek test DSK + WOZ (Boot!!.woz, Virtual ][ 51,200-bit
+  tracks), whole/half/quarter tracks, angle exact to the cell; flash writes
+  during a capture leave core 1's longest loop pass at 2 us and the stream
+  bit-exact; `tools/check_core1_ram.py` proves core-1 code is all in RAM.
+  RAM: static 487 KB of 512; heap headroom 16 KB idle, 8 KB after 26
+  concurrent HTTP requests; core-0 stack low-water ~1.5 KB under load (was
+  880 B before `-fconserve-stack` and a streaming 6-and-2 encoder). Boot to
+  serving ~3 s (2 s USB console wait; the //e boot ROM just retries).
+  **Barry's milestone 5 test:** see the end of this file's milestone table.
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
@@ -279,16 +302,18 @@ not measured from Barry's parts.
 | ENABLE*, WRREQ* active low | verified | Apple dwg 050-0007-01 (overbars) |
 | WRPROT high = write-protected | from working code | tinyDiskII `floppy_main.cpp` |
 | Bit cell 4 µs | from working code | tinyDiskII, RP2350 project |
-| RDDATA pulse sense | **conflict; chose idle high** | tinyDiskII: idle low, 1 µs high pulse at end of cell. RP2350 project: idle high, 1 µs low pulse, "as a Disk II's read amplifier gives". Both reportedly work. Milestone 4 uses idle high (disk2.pio side-set); confirm on the //e in milestone 5. |
+| RDDATA pulse sense: **idle low, 1 µs high pulse** (since v0.12) | primary source | MC3470 data sheet (Motorola, bitsavers `components/motorola/_dataSheets/MC3470.pdf`) Fig. 28 "Digital Output": low with a positive pulse per flux peak; Apple dwg 050-0007-01: MC3470 pin 10 → 74LS125 (non-inverting) → pin 16. Agrees with tinyDiskII and SDISK II. RP2350 project uses idle high (both reportedly work: the card likely reacts to one edge). Done as a GPIO output invert on GP10; `/test/rdpulse` flips it. Confirm on the //e. |
 | Write decode: a WRDATA transition in a cell = 1, none = 0; sync on D5 | from working code | tinyDiskII |
 | Apple write cell is ~3.958 µs; resync on each rising edge | from working code's README | vibr77 STM32 project |
 | Each track revolution must be exactly the track's bit count (no word padding) or nibble-counting loaders fail | from working code | RP2350 `src/disk2.pio` comments |
-| Head tracking: phases treated one-hot; step to next phase = +1 half-track (0–69), previous = −1; track = half-track/2 | from working code | tinyDiskII |
+| Head tracking: one-hot next phase = +1 half track, previous = −1, opposite/same = none; track = half-track/2 | from working code | tinyDiskII, SDISK II (quarter-track counter 0–139) |
+| Our model: vector sum of energized phases → one of 8 rotor positions (2 tracks per turn), short way, quarter tracks 0–159; reduces to the one-hot rules; a phase state must hold 100 µs | design | `src/stepper.h`, host-tested |
 | Ignore phase changes while ENABLE* is high | design rule | real drive's stepper is powered only when enabled (Apple dwg, Q1) |
 
-Still to verify against *Beneath Apple DOS*: 6-and-2 GCR tables, address/data
-field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
-(.dsk is DOS order; .po is ProDOS order).
+Verified against *Beneath Apple DOS*: 6-and-2 GCR table, address/data field
+layout, sync gaps, DOS 3.3 interleave (2026-11-13, see `src/gcr.c`); VTOC
+layout, ch. 4 (2026-11-15). Unverified: the P5 boot ROM's recalibrate phase
+order (only a host-test scenario depends on it).
 
 ## Firmware plan
 
@@ -337,6 +362,14 @@ field layout, sync gap lengths, DOS 3.3 logical-to-physical sector interleave
 | `POST /settings` | form body `ssid=&password=&hostname=` (blank password = keep); saves to flash, restarts |
 | `POST /restart` | restart (refused while busy) |
 | `GET /image.woz` | test only: mounted .dsk encoded to WOZ 2 |
+| `POST /test/stream?track=N[&start=C][&cells=N]` | bench: core 0 plays a track from cell C (drive suspended), captured on GP10 and checked bit for bit |
+| `POST /test/seek?q=N\|track=N[&flash=1]` | bench: steps the running drive by GPIO input override, checks head, data, angle; flash=1 writes the directory twice during the capture |
+| `POST /test/rdpulse?idle=low\|high` | RDDATA sense until restart |
+
+`/status` has a `drive` object: serving, enabled, track (e.g. 17.25),
+quarter_track, on_data, steps, selects, load_ms, loop_max_us, rddata_idle,
+error; plus heap_headroom/heap_in_use. The OLED's third line shows the head
+("Track 17  ON" while selected).
 
 **GUI vocabulary (decided 2026-11-13, revised 2026-11-14):** the collection
 of images is the **carousel**. The image the drive serves is the **mounted**
@@ -352,9 +385,11 @@ them). Internally, a 256 KB flash area is an "image space".
 sequence number, alternate writes, newest valid wins) · +8 KB: reserved for
 stored config · 1 MB+64 KB to 4 MB: 11 image spaces of 256 KB. A new image
 goes to a free space, is read back, then the directory switches. Flash writes
-use `flash_safe_execute`, one 4 KB sector at a time. **When core 1 starts
-running the drive emulation it must call `flash_safe_execute_core_init()`**,
-and flash writes stall XIP, so core-1 code that runs during them must be in RAM.
+use `flash_safe_execute`, one 4 KB sector at a time. **Core 1 is never
+locked out** (`PICO_FLASH_ASSUME_CORE1_SAFE=1`): flash writes only mask core
+0's interrupts, so core 1 must run entirely from RAM and read no flash (no
+`static const` tables, no out-of-line SDK calls). Run
+`tools/check_core1_ram.py` after changing core-1 code.
 
 ### Firmware notes
 
@@ -374,6 +409,7 @@ and flash writes stall XIP, so core-1 code that runs during them must be in RAM.
 | 3 | GCR encoder | Pico encodes the image and serves it back as WOZ; it boots/catalogs in a Mac emulator | no |
 | 4 | Bit timing | PIO stream on GP10 jumpered to a second Pico, captured bit-exact at 4 µs cells | no |
 | 5 | Read on the //e | `CATALOG` lists the pushed image from the vdisk (as D1 or D2); `BLOAD`/`RUN` works; booting it as D1 works | yes |
+| 5 (firmware built) | Barry's test: //e off, meter J1/ribbon (pin 1 GND, pin 11 +5 V), plug in as D2 first; power on; OLED should show "Track 0"; `CATALOG,D2` (head moves: OLED shows track and ON); `BRUN`/`RUN`; then as D1: boot. If nothing reads: `curl -X POST 'http://vdisk.local/test/rdpulse?idle=high'` and retry (then tell Claude) | yes |
 | 6 | Writes | `SAVE`/`BSAVE` to the vdisk; pull image; file present and image consistent on the Mac | yes |
 | 7+ | Knock, selector, button navigation, WOZ input | later | yes |
 
@@ -415,8 +451,9 @@ into the decoder.
   power-on. OLED in setup mode: "Join a2drive-setup / Open 192.168.4.1".
   Not built yet. Check pico-examples' AP DHCP/DNS servers before relying on
   them.
-- **//e configurator: reference design (agreed 2026-11-13; optional, OUT OF
-  SCOPE for now; replaces the "knock" idea):**
+- **//e configurator: ON HOLD (Barry, 2026-11-15: "the OLED UI will be good
+  for a long time"). Reference design (agreed 2026-11-13; replaces the
+  "knock" idea), kept for later:**
   - Tracks beyond the image's last track (34 for DSK; up to 39 for a 40-track
     WOZ) return no readable data, so a 40-track DOS gets I/O ERROR as on a
     real 35-track drive.
@@ -454,7 +491,8 @@ into the decoder.
 | [vibr77/AppleIIDiskIIStm32F411](https://github.com/vibr77/AppleIIDiskIIStm32F411) | STM32F411, SD, OLED, Disk II + SmartPort, WOZ read/write | none found (all rights reserved) | Read for method only; do not copy |
 | SDISK II (Koichi Nishida) | original ATmega328 drive emulator | — | ancestor of tinyDiskII |
 | BMOW Floppy Emu | ATmega1284 + XC9572XL CPLD, SD card | closed | none available |
-| FujiNet | network-as-disk via TNFS server | — | Barry dislikes: needs a server, WiFi drops = disk errors. Our design keeps the disk local. |
+| FujiNet | network-as-disk via TNFS server | GPL-3.0 | Barry dislikes: needs a server, WiFi drops = disk errors. Our design keeps the disk local. Its `lib/bus/iwm/iwm_ll.cpp` has an ESP32 Disk II path (read for method only). |
+| SDISK II firmware (Nishida), copies at ironsteel/sdisk2-firmware, rbanffy/sdisk2 | ATmega328, the original micro-based Disk II emulator | GPL-3.0 | Read for method only: RDDATA idle low + ~1 µs high pulse; WRPROT high = protected; quarter-track stepper table; phases ignored while ENABLE* high |
 
 ## Repository layout
 

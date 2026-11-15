@@ -85,7 +85,8 @@ add_executable(a2drive
     src/status.c
     src/oled.c
     src/player.c
-    src/streamtest.c
+    src/benchtest.c
+    src/drive.c
     src/third_party/dhcpserver/dhcpserver.c
     ${CMAKE_CURRENT_BINARY_DIR}/generated/index_html.c
 )
@@ -93,14 +94,20 @@ target_include_directories(a2drive PRIVATE
     src                                        # lwipopts.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated      # config_defaults.h
 )
-target_compile_options(a2drive PRIVATE -Wall -Wextra)
+# -fconserve-stack: keep inlining from merging big frames. Core 0 has a 4 KB
+# stack shared with lwIP's interrupt-time callbacks (see PICO_STACK_SIZE).
+target_compile_options(a2drive PRIVATE -Wall -Wextra -fconserve-stack)
 # Vendored code: build as-is, without our warning set.
 set_source_files_properties(src/third_party/dhcpserver/dhcpserver.c PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.11-m4"
+    A2DRIVE_VERSION="0.12-m5"
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
     PICO_USE_STACK_GUARDS=1     # M33 MSPLIM: stack overflow faults at once (see diag.c)
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages
+    # Core 1 runs the drive from RAM and never reads flash (drive.c), so flash
+    # writes need not stop it: flash_safe_execute only masks core 0's IRQs.
+    # tools/check_core1_ram.py checks the ELF for core-1 code in flash.
+    PICO_FLASH_ASSUME_CORE1_SAFE=1
 )
 target_link_libraries(a2drive
     pico_stdlib
@@ -109,6 +116,7 @@ target_link_libraries(a2drive
     pico_lwip_sntp
     pico_unique_id
     pico_flash
+    pico_multicore
     pico_sha256
     hardware_i2c
     hardware_pio

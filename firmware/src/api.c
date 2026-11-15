@@ -45,7 +45,8 @@
 #include "diag.h"
 #include "http.h"
 #include "json.h"
-#include "streamtest.h"
+#include "benchtest.h"
+#include "player.h"
 #include "status.h"
 #include "store.h"
 #include "woz.h"
@@ -247,7 +248,7 @@ static void woz_fill(void *ctx, size_t off, uint8_t *dst, size_t n)
             size_t o = (off - WOZ_HEADER_BYTES) % WOZ_TRACK_BYTES;
             if (w->track != (int)t) {
                 gcr_encode_track(w->trk, w->dsk + t * GCR_TRACK_DATA,
-                                 (unsigned)t, GCR_DEFAULT_VOLUME);
+                                 (unsigned)t, gcr_dsk_volume(w->dsk));
                 w->track = (int)t;
             }
             chunk = WOZ_TRACK_BYTES - o;
@@ -486,13 +487,17 @@ static void run_op(void)
     cyw43_arch_lwip_end();
 }
 
-// ---------------------------------------------------------------- milestone 4 test
+// ---------------------------------------------------------------- bench tests
 
-// POST /test/stream?track=N: runs from the main loop without blocking it:
-// first pass starts the player and capture, later passes poll until the
-// report is ready (~0.3 s), then it is the reply.
+// POST /test/stream?track=N[&cells=N][&start=N] and POST /test/seek?q=N (or
+// ?track=N): run from the main loop: the first pass starts the test, later
+// passes poll until the report is ready (~0.3 s; a seek blocks for its
+// steps first, <= ~0.7 s), then it is the reply. See benchtest.h.
 static bool stream_started;
-static uint32_t stream_cells;      // 0 = whole track
+static bool test_seek;              // which test op OP_STREAM runs
+static uint32_t stream_cells;       // 0 = whole track
+static uint32_t stream_start;
+static bool test_flash;             // seek: write flash during the capture
 
 static void stream_reply(int code, const char *body)
 {
@@ -512,7 +517,10 @@ static void poll_stream(void)
     static char report[1024];
     if (!stream_started) {
         char err[96];
-        if (streamtest_start((unsigned)op_row, stream_cells, err, sizeof err) != 0) {
+        int rc = test_seek ? benchtest_seek(op_row, test_flash, err, sizeof err)
+                           : benchtest_stream((unsigned)op_row, stream_cells, stream_start,
+                                              err, sizeof err);
+        if (rc != 0) {
             static char e[sizeof err * 6];
             json_escape(e, sizeof e, err);
             snprintf(report, sizeof report, "{\"ok\":false,\"error\":\"%s\"}\n", e);
@@ -520,7 +528,7 @@ static void poll_stream(void)
             return;
         }
         stream_started = true;
-    } else if (streamtest_poll(report, sizeof report)) {
+    } else if (benchtest_poll(report, sizeof report)) {
         stream_reply(200, report);
     }
 }
@@ -691,11 +699,46 @@ static void handle(conn_t *c)
         char t[8] = "0";
         if (!post)
             return method_not_allowed(c, "POST");
-        char n[12] = "0";
+        char n[12] = "0", st[12] = "0";
         http_query_param(c, "track", t, sizeof t);
         http_query_param(c, "cells", n, sizeof n);
+        http_query_param(c, "start", st, sizeof st);
+        if (busy())
+            return http_respond_text(c, 409, "busy; try again\n");
         stream_cells = (uint32_t)strtoul(n, NULL, 10);
+        stream_start = (uint32_t)strtoul(st, NULL, 10);
+        test_seek = false;
         start_op(c, OP_STREAM, atoi(t));
+    } else if (strcmp(p, "/test/seek") == 0) {
+        char q[8] = "", t[8] = "", f[4] = "0";
+        if (!post)
+            return method_not_allowed(c, "POST");
+        http_query_param(c, "q", q, sizeof q);
+        http_query_param(c, "track", t, sizeof t);
+        http_query_param(c, "flash", f, sizeof f);
+        if (!q[0] && !t[0])
+            return http_respond_text(c, 400, "need ?q=quarter-track or ?track=N\n");
+        if (busy())
+            return http_respond_text(c, 409, "busy; try again\n");
+        test_seek = true;
+        test_flash = f[0] == '1';
+        start_op(c, OP_STREAM, q[0] ? atoi(q) : 4 * atoi(t));
+    } else if (strcmp(p, "/test/rdpulse") == 0) {
+        // RDDATA sense, until restart: ?idle=low (default; Disk II analog
+        // board) or ?idle=high. For trying the other sense on the //e.
+        char v[8] = "";
+        if (!post)
+            return method_not_allowed(c, "POST");
+        http_query_param(c, "idle", v, sizeof v);
+        if (strcmp(v, "high") && strcmp(v, "low"))
+            return http_respond_text(c, 400, "need ?idle=low or ?idle=high\n");
+        player_set_idle_high(v[0] == 'h');
+        static const char ok_low[] = "{\"ok\":true,\"rddata_idle\":\"low\"}\n";
+        static const char ok_high[] = "{\"ok\":true,\"rddata_idle\":\"high\"}\n";
+        if (v[0] == 'h')
+            http_respond(c, 200, "application/json", ok_high, sizeof ok_high - 1, false, NULL);
+        else
+            http_respond(c, 200, "application/json", ok_low, sizeof ok_low - 1, false, NULL);
     } else if (strcmp(p, "/image.woz") == 0) {
         if (!get)
             return method_not_allowed(c, "GET");

@@ -128,6 +128,16 @@ function render() {
   formChanged();
 }
 
+// Head position (quarter tracks shown as .25/.5/.75), ON while the Apple
+// has the drive selected; why nothing is served, if so.
+function driveText(d) {
+  if (!d) return '—';
+  if (d.error) return 'not serving: ' + d.error;
+  const on = d.enabled ? ' · ON' : '';
+  if (!d.serving) return 'empty, head on track ' + d.track + on;
+  return 'Track ' + d.track + (d.on_data ? '' : ' (no data here)') + on;
+}
+
 async function refresh() {
   try {
     const l = await (await fetch('/images', {cache: 'no-store'})).json();
@@ -138,7 +148,9 @@ async function refresh() {
       ['IP', s.ip || '\u2014'],
       ['Signal', s.rssi_dbm == null ? '—' : s.rssi_dbm + ' dBm'], ['Firmware', s.firmware],
       ['Network config', s.settings],
+      ['Drive', driveText(s.drive)],
       ['Last reset', s.last_reset], ['Stack headroom', s.stack_free + ' bytes'],
+      ['Heap headroom', s.heap_headroom + ' bytes'],
     ].flatMap(([k, v]) => [el('dt', k), el('dd', v)]));
     $('err').textContent = '';
     setupMode = !!s.setup_mode;

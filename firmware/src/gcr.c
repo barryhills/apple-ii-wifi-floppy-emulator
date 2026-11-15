@@ -73,29 +73,32 @@ static void put_4and4(bits_t *w, uint8_t v)
     put_byte(w, (uint8_t)(v | 0xAA));
 }
 
-// 256 data bytes -> 343 disk bytes (342 + checksum). Layout per [D2W];
-// XOR chaining per [BAD] (each written value is the XOR of consecutive
-// 6-bit values; the last is the checksum).
-static void encode_6and2(uint8_t out[343], const uint8_t *src)
+// 256 data bytes -> 343 disk bytes (342 + checksum), written straight to
+// the bit stream (no 342-byte arrays: this runs on the 4 KB main stack, with
+// lwIP interrupts nesting on top). Layout per [D2W]: 86 values built from
+// the low two bits of src[i], src[i+86], src[i+172] (bit pairs swapped),
+// then 256 values src[j] >> 2. XOR chaining per [BAD]: each written value is
+// the XOR of consecutive 6-bit values; the last value alone is the checksum.
+static uint8_t six(const uint8_t *src, int i)
 {
     static const uint8_t swap2[4] = { 0, 2, 1, 3 };
-    uint8_t v[342];
+    if (i >= 86)
+        return src[i - 86] >> 2;
+    uint8_t x = swap2[src[i] & 3] | (uint8_t)(swap2[src[i + 86] & 3] << 2);
+    if (i + 172 < 256)
+        x |= (uint8_t)(swap2[src[i + 172] & 3] << 4);
+    return x;
+}
 
-    for (int i = 0; i < 86; i++) {
-        uint8_t x = swap2[src[i] & 3] | (uint8_t)(swap2[src[i + 86] & 3] << 2);
-        if (i + 172 < 256)
-            x |= (uint8_t)(swap2[src[i + 172] & 3] << 4);
-        v[i] = x;
-    }
-    for (int i = 0; i < 256; i++)
-        v[86 + i] = src[i] >> 2;
-
+static void put_6and2(bits_t *w, const uint8_t *src)
+{
     uint8_t prev = 0;
     for (int i = 0; i < 342; i++) {
-        out[i] = gcr62[v[i] ^ prev];
-        prev = v[i];
+        uint8_t v = six(src, i);
+        put_byte(w, gcr62[v ^ prev]);
+        prev = v;
     }
-    out[342] = gcr62[prev];
+    put_byte(w, gcr62[prev]);
 }
 
 size_t gcr_encode_track(uint8_t out[GCR_TRACK_BUF], const uint8_t *dsk_track,
@@ -103,7 +106,6 @@ size_t gcr_encode_track(uint8_t out[GCR_TRACK_BUF], const uint8_t *dsk_track,
 {
     memset(out, 0, GCR_TRACK_BUF);
     bits_t w = { out, 0, (size_t)GCR_TRACK_BUF * 8 };
-    uint8_t nib[343];
 
     put_syncs(&w, GAP1);
     for (unsigned p = 0; p < GCR_SECTORS; p++) {
@@ -119,12 +121,18 @@ size_t gcr_encode_track(uint8_t out[GCR_TRACK_BUF], const uint8_t *dsk_track,
 
         // Data field [BAD]: D5 AA AD, 342 + checksum, DE AA EB.
         put_byte(&w, 0xD5); put_byte(&w, 0xAA); put_byte(&w, 0xAD);
-        encode_6and2(nib, dsk_track + 256u * gcr_phys_to_logical[p]);
-        for (int i = 0; i < 343; i++)
-            put_byte(&w, nib[i]);
+        put_6and2(&w, dsk_track + 256u * gcr_phys_to_logical[p]);
         put_byte(&w, 0xDE); put_byte(&w, 0xAA); put_byte(&w, 0xEB);
 
         put_syncs(&w, GAP3);
     }
     return w.pos;
+}
+
+unsigned gcr_dsk_volume(const uint8_t *dsk)
+{
+    const uint8_t *v = dsk + 17u * GCR_TRACK_DATA;      // logical sector 0 of track 17
+    if (v[0x35] == 16 && v[0x36] == 0x00 && v[0x37] == 0x01 && v[0x06] >= 1 && v[0x06] <= 254)
+        return v[0x06];
+    return GCR_DEFAULT_VOLUME;
 }

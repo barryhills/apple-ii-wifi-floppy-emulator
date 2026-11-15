@@ -1,6 +1,6 @@
 // a2drive — WiFi Disk II drive emulator firmware.
-// Milestone 2: WiFi, mDNS, HTTP status, and one .dsk image stored in flash
-// (upload/download). Press Enter on the USB serial console for status.
+// Core 0: WiFi, HTTP, flash storage, OLED and buttons (this loop). Core 1:
+// the drive itself (drive.c). Press Enter on the USB serial console for status.
 
 #include <stdio.h>
 #include "pico/stdlib.h"
@@ -9,6 +9,7 @@
 #include "api.h"
 #include "config.h"
 #include "diag.h"
+#include "drive.h"
 #include "net.h"
 #include "oled.h"
 #include "store.h"
@@ -40,6 +41,7 @@ int main(void)
     oled_init();
     store_init();
     config_load();
+    drive_init();
     // Setup mode (access point for entering WiFi settings): UP+DOWN held at
     // power-on, no network configured, or the fallback in net.c asked for
     // it. Only the last kind gives up after a while of nobody using it.
@@ -60,6 +62,7 @@ int main(void)
         diag_feed();
         net_poll();
         bool busy = api_poll();
+        drive_poll();
         oled_poll();
         uint32_t ds = (uint32_t)(time_us_64() / 100000);       // 100 ms units
         int want = net_is_up() ? (ds % 10) < 5 : 1;

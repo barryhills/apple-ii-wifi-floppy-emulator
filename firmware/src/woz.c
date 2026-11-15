@@ -70,15 +70,16 @@ uint32_t woz_prepare(const uint8_t *dsk, uint32_t bits[GCR_TRACKS],
 {
     static uint8_t hdr[WOZ_HEADER_BYTES];  // static: firmware calls this on the IRQ stack
     uint32_t crc = 0;
+    unsigned vol = gcr_dsk_volume(dsk);
 
     for (int t = 0; t < GCR_TRACKS; t++)
         bits[t] = (uint32_t)gcr_encode_track(scratch, dsk + (size_t)t * GCR_TRACK_DATA,
-                                             (unsigned)t, GCR_DEFAULT_VOLUME);
+                                             (unsigned)t, vol);
     woz_header(hdr, bits, 0, creator, write_protected);
     crc = crc32_update(crc, hdr + 12, WOZ_HEADER_BYTES - 12);
     for (int t = 0; t < GCR_TRACKS; t++) {
         gcr_encode_track(scratch, dsk + (size_t)t * GCR_TRACK_DATA,
-                         (unsigned)t, GCR_DEFAULT_VOLUME);
+                         (unsigned)t, vol);
         crc = crc32_update(crc, scratch, WOZ_TRACK_BYTES);
     }
     return crc;

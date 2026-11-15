@@ -34,7 +34,7 @@ int main(int argc, char **argv)
     if (!o) { perror(argv[2]); return 1; }
     fwrite(hdr, 1, sizeof hdr, o);
     for (int t = 0; t < GCR_TRACKS; t++) {
-        gcr_encode_track(trk, dsk + t * GCR_TRACK_DATA, (unsigned)t, GCR_DEFAULT_VOLUME);
+        gcr_encode_track(trk, dsk + t * GCR_TRACK_DATA, (unsigned)t, gcr_dsk_volume(dsk));
         fwrite(trk, 1, sizeof trk, o);
     }
     fclose(o);
