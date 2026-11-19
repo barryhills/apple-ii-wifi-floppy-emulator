@@ -297,9 +297,17 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   `a2drive-setup` -> open 192.168.4.1 -> enter WiFi + hostname -> Save ->
   drive restarts on the home network. Checked: UF2 does not contain the
   password; Barry's board kept its stored settings across the flash.
-  The empty-SSID path itself has not run on hardware yet (before v0.14
-  config.json always supplied an SSID). Barry's old firmware/config.json
-  (gitignored, holds the password) is no longer used.
+  **Virgin setup passed 2026-11-19 (Barry):** whole flash erased
+  (`picotool erase -r 0x10000000 0x10400000 -f`), firmware loaded, setup
+  mode came up, settings saved, drive joined; password persisted across a
+  reset. Barry reloads images from his own golden copies (no restore).
+  Follow-up: user-facing text said "your Mac"; now "this computer or
+  phone", plus "or the IP address on the drive's display" (phones may not
+  resolve .local). firmware/config.json deleted. Setup at 192.168.4.1
+  failed in Vivaldi and Edge (both Chromium), worked in Safari: likely
+  Chromium trying https first for a bare IP and/or macOS 15 Local Network
+  permission for third-party browsers. OLED setup line 3 is now
+  "http://192.168.4.1" (v0.14.2) instead of "Open 192.168.4.1".
 - **GUI + OLED trim (v0.14.1-oled, 2026-11-19, Barry passed):** Page:
   title/h1 "Apple II WiFi Disk Manager"; sections IMAGE CAROUSEL and
   DEVICE; detail line drops the SHA-256 (still in /images, still checked
@@ -310,6 +318,19 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   on load and after an operation. OLED: line 3 "Track N" only (no ON/W/*;
   the activity LED covers it); image names without file type on the home
   screen and picker (web page keeps it); setup screen rewritten as steps.
+- **.dsk trailing junk tolerated (v0.14.3, 2026-11-19):** Barry's "Copy
+  II Plus 5.5.dsk" is 143,363 bytes (31 identical copies on his Mac): a
+  valid DOS 3.3 disk (boot sector at 0, VTOC at $11000) plus 3 bytes
+  `af ec ee` at the end. A .dsk may now be 143,360 + 0..255 bytes
+  (`DSK_SIZE_OK`, store.h): only the first 143,360 are the disk; the tail
+  is stored and written back unchanged, so a download returns the upload.
+  Checked in upload (api.c), format detection (store.c), write-back
+  (drive.c appends the tail) and the page. Tested: 143,359 and 143,616
+  refused (400); 143,615 accepted; Copy II Plus uploads, downloads
+  byte-identical, reads (seek t17), and a sector write changes exactly
+  256 bytes (T17 logical sector 6) with the tail intact.
+  Mac gotcha: curl -T treats `[]` in a path as a glob; Barry's folder is
+  `APPLE ][`, so use `curl -g`.
 - **Several boards (Barry has 6 //e's):** every board boots as
   `a2drive.local` (since v0.14 via setup mode, where the hostname is set) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default
@@ -460,9 +481,9 @@ order (only a host-test scenario depends on it).
   ~256 KB slots).
 - **Interim persistence rule:** one image, stored in flash, served at every
   power-on. Full persistence behaviour is deferred (see below).
-- **Network:** DHCP, mDNS name `a2drive.local` by default. **Barry renamed his
-  drive to `vdisk.local`** (stored setting, 2026-11-13; earlier apple2vdisk;
-  IP on the home LAN).
+- **Network:** DHCP, mDNS name `a2drive.local` by default. Barry's drive
+  was `vdisk.local` (2026-11-13) until the 2026-11-19 full erase; he kept
+  the default in setup, so it is **`a2drive.local`** again (IP on the home LAN).
   DHCP reservation as fallback;
   plain HTTP, no auth on the home LAN. WiFi is 2.4 GHz only (fine for Barry).
   A failed upload must leave the mounted image untouched (swap after complete).

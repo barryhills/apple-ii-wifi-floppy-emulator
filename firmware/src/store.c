@@ -487,10 +487,11 @@ int store_write_finish(int row, const char *name, int64_t uploaded, char *err, s
         if (woz_parse(fl, wr.size, &wi, err, errn))
             return -1;
         fmt = wi.version == 1 ? FMT_WOZ1 : FMT_WOZ2;
-    } else if (wr.size == DSK_SIZE) {
+    } else if (DSK_SIZE_OK(wr.size)) {
         fmt = FMT_DSK;
     } else {
-        snprintf(err, errn, "not a .dsk (exactly %u bytes) or a WOZ file", DSK_SIZE);
+        snprintf(err, errn, "not a .dsk (%u bytes, up to %u more tolerated) or a WOZ file",
+                 DSK_SIZE, DSK_MAX_EXTRA);
         return -1;
     }
 

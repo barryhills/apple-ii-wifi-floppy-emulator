@@ -591,6 +591,10 @@ static int writeback(int row, const image_info_t *im)
                 goto fail;
             diag_feed();
         }
+        // Junk after the disk (DSK_MAX_EXTRA): carried over unchanged.
+        if (im->size > DSK_SIZE &&
+            store_write_chunk(im->data + DSK_SIZE, im->size - DSK_SIZE, err, sizeof err))
+            goto fail;
     } else {
         static woz_info_t w;
         if (woz_parse(im->data, im->size, &w, err, sizeof err))

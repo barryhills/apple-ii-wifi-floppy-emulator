@@ -6,7 +6,7 @@
 //   GET /status   JSON status
 //   GET /image    download the stored image
 //   GET /image.woz  test only: a stored .dsk GCR-encoded as WOZ 2
-//   PUT /image    upload a .dsk (143,360 bytes) or .woz (?name=file)
+//   PUT /image    upload a .dsk (143,360 bytes, up to 255 trailing tolerated) or .woz (?name=file)
 void api_init(void);    // registers with the HTTP engine; lwIP lock held
 bool api_busy(void);    // upload, mount/delete/rename, settings or restart in progress
 bool api_store_busy(void);  // the same, less bench tests: the store must not be touched

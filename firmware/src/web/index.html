@@ -206,8 +206,8 @@ $('file').onchange = () => {
   const f = $('file').files[0];
   if (!f) return;
   const woz = /\.woz$/i.test(f.name);
-  if (!woz && f.size !== DSK)
-    return msg(`${f.name} is ${f.size.toLocaleString()} bytes; a .dsk image must be exactly ${DSK.toLocaleString()}.`, 'bad');
+  if (!woz && (f.size < DSK || f.size > DSK + 255))     // trailing junk up to 255 bytes is tolerated
+    return msg(`${f.name} is ${f.size.toLocaleString()} bytes; a .dsk image must be ${DSK.toLocaleString()}.`, 'bad');
   if (f.size > MAX)
     return msg(`${f.name} is ${f.size.toLocaleString()} bytes; the drive holds images up to ${MAX.toLocaleString()}.`, 'bad');
   const r = rows[sel], row = sel + 1;
@@ -318,12 +318,13 @@ $('setsave').onclick = async () => {
     const ssidChanged = ssid !== current.ssid;
     if (setupMode || ssidChanged)
       alert(`Saved. The drive is restarting and will join the WiFi network "${ssid}".\n\n` +
-            `Next: set your Mac's WiFi to "${ssid}"` + (setupMode ? ' (leave a2drive-setup)' : '') +
-            `, then open ${url} in about 20 seconds.\n\n` +
+            `Next: switch this computer or phone to the WiFi network "${ssid}"` +
+            (setupMode ? ' (leave a2drive-setup)' : '') +
+            `, then in about 20 seconds open ${url} (or the IP address on the drive's display).\n\n` +
             'If the drive cannot join, it returns to setup mode within about 2 minutes: ' +
             'join a2drive-setup again and check the network name and password.');
     else if (host !== location.hostname.replace(/\.local$/, ''))
-      alert(`Saved. The drive is restarting with its new name.\n\nIn about 20 seconds open ${url}`);
+      alert(`Saved. The drive is restarting with its new name.\n\nIn about 20 seconds open ${url} (or the IP address on the drive's display).`);
     if (setupMode || ssidChanged || host !== location.hostname.replace(/\.local$/, '')) {
       $('devmsg').replaceChildren('Saved. The drive is restarting; in about 20 seconds open ',
         Object.assign(document.createElement('a'), {href: url, textContent: url}), '.');

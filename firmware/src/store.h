@@ -24,6 +24,12 @@
 #define STORE_CONFIG_OFFSET  0x102000u   // flash offset of the settings sector
 #define STORE_ROWS      10
 #define DSK_SIZE        143360u     // 35 tracks x 16 sectors x 256 bytes
+// A .dsk may carry up to this many junk bytes after the disk (seen in the
+// wild: "Copy II Plus 5.5.dsk", 3 bytes). Only the first DSK_SIZE are the
+// disk; the rest is kept untouched so a download returns the file as
+// uploaded (Barry, 2026-11-19).
+#define DSK_MAX_EXTRA   255u
+#define DSK_SIZE_OK(n)  ((n) >= DSK_SIZE && (n) <= DSK_SIZE + DSK_MAX_EXTRA)
 #define IMAGE_NAME_MAX  64          // including NUL
 #define IMAGE_MAX_SIZE  (256u * 1024u)
 #define STORE_SLOTS_MAX 32          // upper bound for "avoid" masks

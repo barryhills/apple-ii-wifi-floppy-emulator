@@ -246,7 +246,9 @@ static void draw_home(void)
         put_line(0, time_reached(note_until) ? "WiFi setup mode" : note);
         snprintf(s, sizeof s, "Join %s", net_setup_ssid());
         put_line(1, s);
-        snprintf(s, sizeof s, "Open %s", net_ip_str());
+        // Explicit http://: Chromium browsers (Vivaldi, Edge) given a bare
+        // IP may try https first and fail; the drive serves http only.
+        snprintf(s, sizeof s, "http://%s", net_ip_str());
         put_line(2, s);
         put_line(3, "No password needed");
         return;

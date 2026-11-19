@@ -378,8 +378,9 @@ static void put_image(conn_t *c, int row)
         http_respond(c, 413, "text/plain; charset=utf-8", msg, strlen(msg), true, NULL);
         return;
     }
-    if ((ends_with_ci(up_name, ".dsk") || ends_with_ci(up_name, ".do")) && cl != (long)DSK_SIZE) {
-        snprintf(msg, sizeof msg, "a .dsk image must be exactly %u bytes; got %ld\n", DSK_SIZE, cl);
+    if ((ends_with_ci(up_name, ".dsk") || ends_with_ci(up_name, ".do")) && !DSK_SIZE_OK((unsigned long)cl)) {
+        snprintf(msg, sizeof msg, "a .dsk image must be %u bytes (up to %u extra at the end tolerated); got %ld\n",
+                 DSK_SIZE, DSK_MAX_EXTRA, cl);
         http_respond(c, 400, "text/plain; charset=utf-8", msg, strlen(msg), true, NULL);
         return;
     }
