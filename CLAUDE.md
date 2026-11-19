@@ -331,6 +331,18 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   256 bytes (T17 logical sector 6) with the tail intact.
   Mac gotcha: curl -T treats `[]` in a path as a glob; Barry's folder is
   `APPLE ][`, so use `curl -g`.
+- **Rotation survives reboots (v0.14.4, 2026-11-19):** free image spaces
+  are picked round-robin from the last one written (`pick_slot`); until
+  v0.14.4 that position reset at boot, biasing wear to low spaces. Now
+  `recover_last_slot()` derives it at boot from the directory ring: the
+  newest directory using a space its predecessor (seq-1) did not. No new
+  stored state, no format change; history gone -> old behaviour. The idle
+  pre-erase needs nothing either (it checks for erased sectors). Not an
+  "80% full" issue: raw NOR, no FTL; one spare space is always reserved.
+  But a full carousel narrows wear to the mounted space + the spare.
+  Tested: last write before flashing was space 8; after the flash reboot
+  the next upload went to 9 (old code: 5), then 10; reboot; then 5, 6
+  (wrapping past 0-4 in use). Scratch row 9 deleted afterwards.
 - **Several boards (Barry has 6 //e's):** every board boots as
   `a2drive.local` (since v0.14 via setup mode, where the hostname is set) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default

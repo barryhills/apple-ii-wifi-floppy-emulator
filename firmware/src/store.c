@@ -255,6 +255,8 @@ static int dir_commit(dir_t *nd, char *err, size_t errn)
     return 0;
 }
 
+static void recover_last_slot(void);
+
 void store_init(void)
 {
     extern char __flash_binary_end;
@@ -291,6 +293,8 @@ void store_init(void)
             }
         }
     }
+
+    recover_last_slot();
 
     int rows = 0;
     for (int r = 0; r < STORE_ROWS; r++) {
@@ -359,6 +363,44 @@ static int pick_slot(uint32_t avoid_mask)
             return s;
     }
     return -1;
+}
+
+// After a reboot, resume the rotation where it left off, so the low image
+// spaces don't take extra wear from every power-up starting at space 0.
+// Nothing extra is stored: the directory ring holds the last few
+// directories, and the newest one that uses a space its predecessor
+// (seq - 1) did not is the one that recorded the last image written.
+// No such pair in the ring (only mounts/renames/deletes since) -> start
+// from the top, as before. Boot only; reads flash, writes nothing.
+static void recover_last_slot(void)
+{
+    const dir_t *by_seq[DIR_RING];
+    int n = 0;
+    for (int i = 0; i < DIR_RING; i++)
+        if (dir_valid(dir_in_flash(i)))
+            by_seq[n++] = dir_in_flash(i);
+    if (cur_sector < 0 || !dir_valid(dir_in_flash(cur_sector)))
+        return;
+    for (uint32_t seq = cur.seq; ; seq--) {
+        const dir_t *nw = NULL, *old = NULL;
+        for (int i = 0; i < n; i++) {
+            if (by_seq[i]->seq == seq)
+                nw = by_seq[i];
+            else if (by_seq[i]->seq == seq - 1)
+                old = by_seq[i];
+        }
+        if (!nw || !old)
+            return;                     // history ends here
+        for (int r = 0; r < STORE_ROWS; r++) {
+            const dir_entry_t *e = &nw->e[r];
+            if (e->used && e->slot < SLOT_COUNT && !slot_in_use(old, e->slot)) {
+                last_slot = e->slot;
+                printf("store: last image written went to space %d (directory seq %lu)\n",
+                       last_slot, (unsigned long)seq);
+                return;
+            }
+        }
+    }
 }
 
 static bool sector_erased(uint32_t off)
