@@ -235,6 +235,18 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   byte stays (layout unchanged, written 0, ignored). WRPROT stays high
   while nothing is served. Bench `/test/seek?flash=1` now renames the row
   and back for its two directory writes. Flashing via `picotool -f`.
+- **Rev B board built 2026-11-19** (Barry: breadboard abandoned as too
+  tedious). OLED and buttons work (UP/DOWN flipped in firmware, above).
+  J1 ohmed out OK. **First //e boot from the vdisk worked first time**
+  (2026-11-19, v0.13.1-nowp, as D1, on a test //e without a keyboard):
+  RDDATA idle-low sense confirmed. Booting exercised plenty of reads:
+  VTOC/catalog navigation, binary file loads. Barry: boot "seemed quick" (not
+  measured). Not yet tried: writes, both image types, D2. Next: a
+  production //e with a keyboard.
+- **Several boards (Barry has 6 //e's):** every board boots as
+  `a2drive.local` (config.json) and our mDNS has no name-conflict handling;
+  bring each new board up alone and rename it in Settings. A unique default
+  name (board-ID suffix) was offered and declined (Barry, 2026-11-19).
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
@@ -349,7 +361,7 @@ not measured from Barry's parts.
 | ENABLE*, WRREQ* active low | verified | Apple dwg 050-0007-01 (overbars) |
 | WRPROT high = write-protected | from working code | tinyDiskII `floppy_main.cpp` |
 | Bit cell 4 µs | from working code | tinyDiskII, RP2350 project |
-| RDDATA pulse sense: **idle low, 1 µs high pulse** (since v0.12) | primary source | MC3470 data sheet (Motorola, bitsavers `components/motorola/_dataSheets/MC3470.pdf`) Fig. 28 "Digital Output": low with a positive pulse per flux peak; Apple dwg 050-0007-01: MC3470 pin 10 → 74LS125 (non-inverting) → pin 16. Agrees with tinyDiskII and SDISK II. RP2350 project uses idle high (both reportedly work: the card likely reacts to one edge). Done as a GPIO output invert on GP10; `/test/rdpulse` flips it. Confirm on the //e. |
+| RDDATA pulse sense: **idle low, 1 µs high pulse** (since v0.12) | primary source | MC3470 data sheet (Motorola, bitsavers `components/motorola/_dataSheets/MC3470.pdf`) Fig. 28 "Digital Output": low with a positive pulse per flux peak; Apple dwg 050-0007-01: MC3470 pin 10 → 74LS125 (non-inverting) → pin 16. Agrees with tinyDiskII and SDISK II. RP2350 project uses idle high (both reportedly work: the card likely reacts to one edge). Done as a GPIO output invert on GP10; `/test/rdpulse` flips it. **Confirmed on the //e 2026-11-19: boots with idle low.** |
 | Write decode: a WRDATA transition in a cell = 1, none = 0; sync on D5 | from working code | tinyDiskII |
 | Our write decode: interval between transitions → n cells (n−1 zeros + 1), adaptive cell length | design | `src/wrdec.h`, host-tested 3.85–4.05 µs |
 | Apple write cell is ~3.958 µs; resync on each rising edge | from working code's README | vibr77 STM32 project |
