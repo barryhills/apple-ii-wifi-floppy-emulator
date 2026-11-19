@@ -244,7 +244,8 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   VTOC/catalog navigation, binary file loads. Barry: boot "seemed quick" (not
   measured). Not yet tried: writes, both image types, D2. Next: a
   production //e with a keyboard.
-- **Resource budget (v0.13.1, 2026-11-19):** SRAM static ~506 of 512 KB
+- **Resource budget (v0.13.1, 2026-11-19; production binary since v0.15
+  frees `cap` and the other bench buffers, ~85 KB, see below):** SRAM static ~506 of 512 KB
   main: track pool 256, bench capture `cap` 64 (bench-only: first thing to
   reclaim if RAM gets tight), lwIP pbufs 36, lwIP heap 24, upload ring 16,
   enc/dec/track_buf 21; stacks in scratch banks. Firmware ~463 KB of the
@@ -343,6 +344,16 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   Tested: last write before flashing was space 8; after the flash reboot
   the next upload went to 9 (old code: 5), then 10; reboot; then 5, 6
   (wrapping past 0-4 in use). Scratch row 9 deleted afterwards.
+- **Production vs bench binary (v0.15, 2026-11-19, Barry: one source,
+  one toggle, two binaries):** CMake option `A2DRIVE_BENCH` (default OFF).
+  OFF drops benchtest.c (capture 64 KB, decode 8 KB, track 6.5 KB),
+  the test report buffer, all `/test/*` routes and `/image.woz`. drive.c's
+  small test hooks stay in both, so the drive code is identical. Measured:
+  bss 497 -> 412 KB, text -14 KB; heap headroom at idle 12 KB -> 96 KB.
+  Production on Barry's board: all /test/* and /image.woz 404; page,
+  images, download, serving OK; core 1 still RAM-only, loop max 2 us.
+  Barry: production v0.15 boots the //e (2026-11-19); writes not re-run
+  on v0.15 (drive code identical to v0.14.4).
 - **Several boards (Barry has 6 //e's):** every board boots as
   `a2drive.local` (since v0.14 via setup mode, where the hostname is set) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default
@@ -367,7 +378,11 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   btstack, mbedtls). CMakeLists defaults to that path if `PICO_SDK_PATH` unset.
 - ninja 1.13.2, picotool 2.3.1 (Homebrew), cmake 4.4.3 (no issues seen).
 - Homebrew has dropped Intel bottles (Tier 3); MacPorts is the fallback.
-- Build: `cmake -S . -B build -G Ninja && ninja -C build`.
+- Build: `cmake -S . -B build -G Ninja && ninja -C build` (production
+  binary). Bench/debug binary, same source: `cmake -S . -B build-bench -G
+  Ninja -DA2DRIVE_BENCH=ON && ninja -C build-bench` (adds /test/*,
+  /image.woz; version "-bench"). Flash `build-bench/a2drive.uf2` only for
+  bench tests, then put the production binary back.
 - Flash: `picotool load -f -v -x build/X.uf2` (`-f` reboots running firmware
   into BOOTSEL over USB; no buttons). Hung Pico: BOOTSEL + RESTART, then
   the same command without `-f`. Don't touch the
@@ -439,7 +454,7 @@ header is unkeyed — a reversed ribbon puts ±12V on logic and kills U1/U2.
 | GP14 (19) | UP* | in | button, internal pull-up |
 | GP15 (20) | DOWN* | in | button, internal pull-up |
 | GP16 (21) | ACT LED | out | rev B bodge on the back: cut R5's +3V3 stub, wire R5's +3V3 pad to pin 21 (v0.13.3) |
-| RUN (30) | RESTART* | — | SW4 hard-resets the Pico |
+| RUN (30) | RESTART* | — | SW4 hard-resets the Pico (RP2350 reset input, not a GPIO; no firmware logic). Barry fitting it 2026-11-19: main use now is UP+DOWN + tap RESTART = setup mode without power-cycling the //e |
 
 Reflash in place: hold BOOTSEL, tap SW4 (RESTART), release BOOTSEL.
 D2 was a plain power LED on 3.3V; since v0.13.3 it is the activity LED on
@@ -522,8 +537,8 @@ order (only a host-test scenario depends on it).
 | `GET /settings` | hostname, SSID, password_set, source (never the password) |
 | `POST /settings` | form body `ssid=&password=&hostname=` (blank password = keep); saves to flash, restarts |
 | `POST /restart` | restart (refused while busy) |
-| `GET /image.woz` | test only: mounted .dsk encoded to WOZ 2 |
-| `POST /test/stream?track=N[&start=C][&cells=N]` | bench: core 0 plays a track from cell C (drive suspended), captured on GP10 and checked bit for bit |
+| `GET /image.woz` | bench binary only: mounted .dsk encoded to WOZ 2 |
+| (bench binary only, `A2DRIVE_BENCH=ON`; 404 in production) `POST /test/stream?track=N[&start=C][&cells=N]` | bench: core 0 plays a track from cell C (drive suspended), captured on GP10 and checked bit for bit |
 | `POST /test/seek?q=N\|track=N[&flash=1]` | bench: steps the running drive by GPIO input override, checks head, data, angle; flash=1 writes the directory twice during the capture |
 | `POST /test/rdpulse?idle=low\|high` | RDDATA sense until restart |
 | `POST /test/write?track=T&sector=S[&cell_ns=3910][&seed=N]` | bench: writes physical sector S like DOS via a test PIO on GP22 (unconnected); checks RAM track, then the saved image. CHANGES THE MOUNTED IMAGE (use a scratch row) |

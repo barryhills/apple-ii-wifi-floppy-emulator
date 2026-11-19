@@ -12,7 +12,7 @@
 //   POST   /restart       restart the drive
 //   POST   /rename/N?name=X     rename row N (the file type is kept)
 //   GET    /image         download the mounted image
-//   GET    /image.woz     test only: mounted .dsk GCR-encoded as WOZ 2
+//   GET    /image.woz     test only (A2DRIVE_BENCH): mounted .dsk GCR-encoded as WOZ 2
 //
 // Mount and delete write the flash directory, so like uploads they run in
 // the main loop (api_poll) and answer when done. One operation at a time;
@@ -44,7 +44,9 @@
 #include "diag.h"
 #include "http.h"
 #include "json.h"
+#if A2DRIVE_BENCH
 #include "benchtest.h"
+#endif
 #include "player.h"
 #include "status.h"
 #include "store.h"
@@ -219,6 +221,7 @@ static void get_image(conn_t *c, int row)
     http_respond(c, 200, "application/octet-stream", im.data, im.size, false, extra);
 }
 
+#if A2DRIVE_BENCH
 // ---------------------------------------------------- GET /image.woz (test)
 // Test endpoint, not on the page: a stored .dsk encoded to GCR and wrapped as
 // WOZ 2, so an emulator can check the encoder. Generated while it is sent;
@@ -316,6 +319,8 @@ static void get_image_woz(conn_t *c)
     http_set_on_close(c, woz_closed);
     http_respond_stream(c, 200, "application/octet-stream", WOZ_FILE_BYTES, woz_fill, w, extra);
 }
+
+#endif // A2DRIVE_BENCH
 
 // ---------------------------------------------------------------- PUT /image
 
@@ -494,6 +499,7 @@ static void run_op(void)
     cyw43_arch_lwip_end();
 }
 
+#if A2DRIVE_BENCH
 // ---------------------------------------------------------------- bench tests
 
 // POST /test/stream?track=N[&cells=N][&start=N] and POST /test/seek?q=N (or
@@ -542,6 +548,8 @@ static void poll_stream(void)
         stream_reply(200, report);
     }
 }
+
+#endif // A2DRIVE_BENCH
 
 // ---------------------------------------------------------------- settings / restart
 
@@ -698,6 +706,7 @@ static void handle(conn_t *c)
         if (!get)
             return method_not_allowed(c, "GET");
         get_image(c, store_mounted());
+#if A2DRIVE_BENCH
     } else if (strcmp(p, "/test/stream") == 0) {
         char t[8] = "0";
         if (!post)
@@ -763,6 +772,7 @@ static void handle(conn_t *c)
         if (!get)
             return method_not_allowed(c, "GET");
         get_image_woz(c);
+#endif // A2DRIVE_BENCH
     } else {
         http_respond_text(c, 404, "not found\n");
     }
@@ -822,10 +832,12 @@ bool api_poll(void)
             ;
     }
 
+#if A2DRIVE_BENCH
     if (op == OP_STREAM) {
         poll_stream();
         return true;
     }
+#endif
     if (op != OP_NONE) {
         run_op();
         return true;

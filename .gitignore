@@ -1,4 +1,5 @@
 build/
+build-bench/
 *.uf2
 *.elf
 .DS_Store

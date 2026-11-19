@@ -11,6 +11,18 @@ project(a2drive C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 
+# One source, one toggle, two binaries. OFF (default) = the firmware that
+# ships: no bench self-tests. ON = adds /test/*, /image.woz and their ~81 KB
+# of RAM (capture buffers); version string gets "-bench".
+option(A2DRIVE_BENCH "Include the bench self-tests (debug binary)" OFF)
+set(A2DRIVE_VERSION_BASE "0.15")
+if(A2DRIVE_BENCH)
+    set(A2DRIVE_VERSION_STR "${A2DRIVE_VERSION_BASE}-bench")
+else()
+    set(A2DRIVE_VERSION_STR "${A2DRIVE_VERSION_BASE}")
+endif()
+message(STATUS "a2drive ${A2DRIVE_VERSION_STR} (A2DRIVE_BENCH=${A2DRIVE_BENCH})")
+
 # ---------------------------------------------------------------------------
 # Embed src/web/index.html as a C array (re-run on change).
 # ---------------------------------------------------------------------------
@@ -40,7 +52,6 @@ add_executable(a2drive
     src/status.c
     src/oled.c
     src/player.c
-    src/benchtest.c
     src/drive.c
     src/third_party/dhcpserver/dhcpserver.c
     ${CMAKE_CURRENT_BINARY_DIR}/generated/index_html.c
@@ -55,7 +66,8 @@ target_compile_options(a2drive PRIVATE -Wall -Wextra -fconserve-stack)
 # Vendored code: build as-is, without our warning set.
 set_source_files_properties(src/third_party/dhcpserver/dhcpserver.c PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.14.4"
+    A2DRIVE_VERSION="${A2DRIVE_VERSION_STR}"
+    A2DRIVE_BENCH=$<BOOL:${A2DRIVE_BENCH}>
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
     PICO_USE_STACK_GUARDS=1     # M33 MSPLIM: stack overflow faults at once (see diag.c)
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages
@@ -86,3 +98,6 @@ pico_generate_pio_header(a2drive ${CMAKE_CURRENT_SOURCE_DIR}/src/wrgen.pio)
 pico_enable_stdio_usb(a2drive 1)
 pico_enable_stdio_uart(a2drive 0)
 pico_add_extra_outputs(a2drive)
+if(A2DRIVE_BENCH)
+    target_sources(a2drive PRIVATE src/benchtest.c)
+endif()
