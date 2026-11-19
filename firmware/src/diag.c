@@ -7,7 +7,6 @@
 
 #define DIAG_MAGIC      0xA2D1A600u     // low byte: reason
 #define REASON_FAULT    1
-#define REASON_SETUP    2       // reboot into WiFi setup mode (net.c)
 #define WATCHDOG_MS     4000
 #define PAINT           0xA5A5A5A5u
 
@@ -18,7 +17,6 @@
 extern uint32_t __StackBottom;          // linker: lowest address of core 0's stack
 
 static char last_reset[128];
-static bool setup_requested;
 
 // ---------------------------------------------------------------- hard fault
 
@@ -83,9 +81,6 @@ void diag_init(void)
                  "crash: hard fault at pc=%08lx lr=%08lx cfsr=%08lx%s",
                  (unsigned long)s[1], (unsigned long)s[2], (unsigned long)s[3],
                  (s[3] & CFSR_STKOF) ? " (stack overflow)" : "");
-    } else if (s[0] == (DIAG_MAGIC | REASON_SETUP)) {
-        setup_requested = true;
-        snprintf(last_reset, sizeof last_reset, "reboot into WiFi setup (no network joined)");
     } else if (watchdog_enable_caused_reboot()) {
         snprintf(last_reset, sizeof last_reset, "hang: watchdog reset (main loop stopped)");
     } else if (watchdog_caused_reboot()) {
@@ -107,18 +102,6 @@ void diag_feed(void)
     watchdog_update();
 }
 
-void diag_reboot_into_setup(void)
-{
-    watchdog_hw->scratch[0] = DIAG_MAGIC | REASON_SETUP;
-    watchdog_reboot(0, 0, 0);
-    for (;;)
-        ;
-}
-
-bool diag_setup_requested(void)
-{
-    return setup_requested;
-}
 
 const char *diag_last_reset(void)
 {

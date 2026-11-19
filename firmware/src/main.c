@@ -27,6 +27,7 @@ static void print_status(void)
 int main(void)
 {
     diag_paint_stack();
+    drive_led_power_on();           // GP16 LED on at once (before the 2 s USB wait)
     stdio_init_all();
 
     if (cyw43_arch_init()) {
@@ -43,14 +44,11 @@ int main(void)
     config_load();
     drive_init();
     // Setup mode (access point for entering WiFi settings): UP+DOWN held at
-    // power-on, no network configured, or the fallback in net.c asked for
-    // it. Only the last kind gives up after a while of nobody using it.
+    // power-on, or no network configured. Nothing else (see net.c).
     bool keys = oled_setup_keys_held(), none = config_ssid()[0] == 0;
-    bool fallback = diag_setup_requested();
-    if (keys || none || fallback)
-        printf("setup mode: %s\n", keys ? "UP+DOWN held at power-on" :
-                                    none ? "no WiFi network configured" : "no network joined");
-    net_init(keys || none || fallback, fallback && !keys && !none);
+    if (keys || none)
+        printf("setup mode: %s\n", keys ? "UP+DOWN held at power-on" : "no WiFi network configured");
+    net_init(keys || none);
     diag_watchdog_start();
 
     // LED: solid on from power-on until joined to a WiFi network (and again

@@ -37,7 +37,13 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
 - Straight talk, no padding. Barry is a retired OS-kernel engineer; he reads C.
 - Ask before git commits/pushes; branch before committing to main.
 
-## Status (as of 2026-11-15)
+## Status (as of 2026-11-19)
+
+All work through v0.15 is on `main` (fast-forwarded 2026-11-19); the
+milestone branches named below (m1-...m6, gui-carousel, m3d/m3e) were
+deleted after merging. Their commits remain in `main`; tags v0.5-list,
+v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
+
 
 - **Board rev B ordered** from JLCPCB (5 bare boards, 2-layer, 1.6 mm, invoice
   2026-11-14, ~$40 all in). In the mail as of 2026-11-15. Barry is
@@ -122,13 +128,12 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   (`src/third_party/dhcpserver/`, MIT, unmodified); same web page, which
   shows a setup note and focuses the WiFi field. Entered at boot only:
   UP+DOWN held at power-on (read ~2 s in, after the USB console wait), no
-  SSID configured, or the fallback: stored settings 1 min (Barry) -> reboot
-  into setup (request carried in watchdog scratch 0; until v0.14 a
-  built-in config.json network was tried for a minute first). Only before the first join; later link loss retries.
-  Nothing is erased: a plain restart returns to normal. A fallback-entered
-  setup mode reboots to retry after 5 min with no client on the AP (router
-  slow after a power cut); button-entered never times out. OLED (since v0.14.1): "WiFi setup
-  mode / Join a2drive-setup / Open 192.168.4.1 / No password needed". No DNS
+  SSID configured. (Until v0.15.3 also an automatic fallback: saved
+  network not joined in 1 min -> reboot into setup, which rebooted again
+  after 5 min idle; removed, see v0.15.3 below.) Setup mode never times
+  out. Nothing is erased: a plain restart returns to normal. OLED (since
+  v0.15.2): "WiFi setup mode / Join a2drive-setup / http://192.168.4.1 /
+  No password needed". No DNS
   server (type the IP). macOS lists the SSID under "Other Networks", and
   can take a few seconds to show it.
   v0.10.1 (Barry passed 2026-11-14): keys held at boot are ignored until
@@ -291,8 +296,8 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   simplicity; careful with passwords before publishing):** config.json,
   config.example.json and config_defaults.h.in removed; the build needs no
   config. Nothing stored -> empty SSID -> setup mode; default hostname
-  `a2drive` (CFG_DEFAULT_HOSTNAME in config.h). Fallback: stored settings
-  don't join in 1 min -> setup mode. Page: "Network config" row removed
+  `a2drive` (CFG_DEFAULT_HOSTNAME in config.h). (Fallback to setup mode
+  removed in v0.15.3: the drive just keeps retrying.) Page: "Network config" row removed
   (with Signal and Last reset, still in /status except `settings`);
   /settings drops `source`. Virgin flow: OLED shows setup screen -> join
   `a2drive-setup` -> open 192.168.4.1 -> enter WiFi + hostname -> Save ->
@@ -354,6 +359,20 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   images, download, serving OK; core 1 still RAM-only, loop max 2 us.
   Barry: production v0.15 boots the //e (2026-11-19); writes not re-run
   on v0.15 (drive code identical to v0.14.4).
+- **Boot lamp (v0.15.1-2, 2026-11-19, branch `led-boot-lamp`):** GP16 LED
+  on from the first line of main() until the first WiFi join (onboard
+  heartbeat starts), then activity only; in setup mode it goes off once
+  setup is decided (~2 s).
+- **No network healing (v0.15.3, 2026-11-19, Barry: "network failures are
+  transient... lets not try to heal the network from the pico"):** the
+  automatic fallback to setup mode is gone (1-min reboot into setup, the
+  5-min idle reboot out of it, the watchdog-scratch request, and the
+  short-lived `drive_used()` guard of v0.15.2). A saved network that
+  won't join is retried every 5 s forever; nothing network-related ever
+  reboots the drive under the //e. Setup mode = no network saved, or
+  UP+DOWN at power-on (RESTART button). Wrong password: OLED keeps saying
+  "connecting..."; the after-save alert on the page now says to use
+  UP+DOWN + RESTART. Flashed: joins normally.
 - **Several boards (Barry has 6 //e's):** every board boots as
   `a2drive.local` (since v0.14 via setup mode, where the hostname is set) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default
@@ -618,16 +637,15 @@ into the decoder.
 - **Network setup (agreed 2026-11-13; Settings/Restart BUILT in v0.7; setup-mode AP BUILT in v0.10, see Status):**
   Device window: info list, then always-visible fields (hostname, WiFi network,
   write-only password), then buttons Save (stores + restarts) · Restart · Cancel.
-  If stored WiFi settings don't connect within 60 s the drive reboots into
-  setup mode (v0.14; earlier it first tried a built-in config.json network).
+  If stored WiFi settings don't connect, the drive keeps retrying (since
+  v0.15.3; earlier it fell back to setup mode after 60 s).
   Device window gets **Settings**
   (hostname, SSID, write-only password; Save & restart) and **Restart**
   (greyed during flash work). Settings stored in the reserved flash sector;
   nothing else (no build-time WiFi since v0.14). **Setup mode:** the Pico becomes
   its own access point "a2drive-setup" at a fixed address (e.g. 192.168.4.1)
-  and serves the same page opened on Settings. Entered automatically (no
-  stored settings, or can't join for ~2 min) or by holding UP+DOWN at
-  power-on. OLED in setup mode: "Join a2drive-setup / Open 192.168.4.1".
+  and serves the same page opened on Settings. Entered automatically only when
+  no settings are stored, or by holding UP+DOWN at power-on. OLED in setup mode: "Join a2drive-setup / Open 192.168.4.1".
   Not built yet. Check pico-examples' AP DHCP/DNS servers before relying on
   them.
 - **//e configurator: ON HOLD (Barry, 2026-11-15: "the OLED UI will be good

@@ -321,8 +321,8 @@ $('setsave').onclick = async () => {
             `Next: switch this computer or phone to the WiFi network "${ssid}"` +
             (setupMode ? ' (leave a2drive-setup)' : '') +
             `, then in about 20 seconds open ${url} (or the IP address on the drive's display).\n\n` +
-            'If the drive cannot join, it returns to setup mode within about 2 minutes: ' +
-            'join a2drive-setup again and check the network name and password.');
+            'If the drive cannot join (its display keeps saying "connecting"), hold UP+DOWN and ' +
+            'press RESTART (or power on) for setup mode, then check the network name and password.');
     else if (host !== location.hostname.replace(/\.local$/, ''))
       alert(`Saved. The drive is restarting with its new name.\n\nIn about 20 seconds open ${url} (or the IP address on the drive's display).`);
     if (setupMode || ssidChanged || host !== location.hostname.replace(/\.local$/, '')) {

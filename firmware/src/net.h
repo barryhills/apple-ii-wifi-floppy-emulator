@@ -4,7 +4,7 @@
 
 // WiFi station + DHCP + mDNS + HTTP. Call net_init() once after
 // cyw43_arch_init(), then net_poll() regularly from the main loop.
-void net_init(bool setup, bool retry_when_idle);  // setup: access point instead of joining
+void net_init(bool setup);   // setup: access point instead of joining
 void net_poll(void);
 
 bool        net_is_up(void);

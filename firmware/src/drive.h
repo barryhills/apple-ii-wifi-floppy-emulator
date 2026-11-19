@@ -19,6 +19,7 @@
 // to 6-and-2 GCR, 35 tracks; a WOZ's tracks are copied), and lets core 1 go
 // on. A head step is then only a DMA repoint.
 
+void drive_led_power_on(void); // first thing in main(): activity LED on until WiFi joins
 void drive_init(void);      // core 0, once: GPIO, player, launch core 1
 void drive_poll(void);      // core 0 main loop: follows the mounted image
 

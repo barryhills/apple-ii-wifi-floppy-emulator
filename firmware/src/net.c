@@ -10,7 +10,6 @@
 
 #include <stdio.h>
 #include "pico/cyw43_arch.h"
-#include "hardware/watchdog.h"
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/apps/mdns.h"
@@ -35,24 +34,18 @@ static int32_t rssi_cache;
 static bool rssi_valid;
 static char ip_str[16];
 
-// Settings come from config.c (stored in flash). If the drive has not
-// joined within FALLBACK_MS (Barry: 1 minute), it reboots into setup mode.
-// Only before the first successful join: a later link loss just retries.
-// A setup mode entered this way reboots to try again after SETUP_IDLE_MS with
-// nobody on the access point, so a router that was slow to come back after a
-// power cut doesn't leave the drive stranded in setup mode.
-#define FALLBACK_MS   60000
+// Settings come from config.c (stored in flash). If the network can't be
+// joined, the drive just keeps retrying, before and after a first join
+// (Barry, 2026-11-19: network failures are transient; the drive never heals
+// the network by rebooting, which would yank the disk from under the
+// Apple). Setup mode only when no network is configured or UP+DOWN is held
+// at power-on (with RESTART: without power-cycling the //e).
 #define SETUP_SSID    "a2drive-setup"
 #define SETUP_IP      "192.168.4.1"
-#define SETUP_IDLE_MS (5 * 60 * 1000)
-static absolute_time_t stage_start;     // current settings first tried
-static bool setup_auto;
-static absolute_time_t setup_idle_until, next_sta_check;
 static dhcp_server_t dhcp;
 #define cfg_ssid     config_ssid()
 #define cfg_password config_password()
 #define cfg_hostname config_hostname()
-static bool ever_up;
 
 static struct netif *sta_netif(void)
 {
@@ -90,19 +83,15 @@ static void start_setup(void)
     api_init();
     cyw43_arch_lwip_end();
     state = NET_SETUP;
-    setup_idle_until = make_timeout_time_ms(SETUP_IDLE_MS);
-    next_sta_check = get_absolute_time();
     printf("wifi: setup mode: join \"%s\" (open), then http://%s/\n", SETUP_SSID, SETUP_IP);
 }
 
-void net_init(bool setup, bool retry_when_idle)
+void net_init(bool setup)
 {
     if (setup) {
-        setup_auto = retry_when_idle;
         start_setup();
         return;
     }
-    stage_start = get_absolute_time();
     cyw43_arch_enable_sta_mode();   // creates the STA netif and starts DHCP
 
     cyw43_arch_lwip_begin();
@@ -138,11 +127,6 @@ static void start_connect(void)
 static void give_up(const char *why)
 {
     printf("wifi: %s; retrying in %d s\n", why, RETRY_DELAY_MS / 1000);
-    if (!ever_up && absolute_time_diff_us(stage_start, get_absolute_time()) > FALLBACK_MS * 1000ll) {
-        printf("wifi: no network joined in %d s; rebooting into setup mode\n", FALLBACK_MS / 1000);
-        sleep_ms(50);                           // let the console drain
-        diag_reboot_into_setup();
-    }
     cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
     ip_str[0] = 0;
     rssi_valid = false;
@@ -167,7 +151,6 @@ void net_poll(void)
             cyw43_arch_lwip_end();
             printf("wifi: up, IP %s, http://%s.local/\n", ip_str, cfg_hostname);
             state = NET_UP;
-            ever_up = true;
             next_rssi = get_absolute_time();
         } else if (link < 0) {
             give_up(link_str(link));
@@ -192,21 +175,6 @@ void net_poll(void)
         break;
 
     case NET_SETUP:
-        if (setup_auto && time_reached(next_sta_check)) {
-            next_sta_check = make_timeout_time_ms(5000);
-            int n = 0;
-            cyw43_wifi_ap_get_stas(&cyw43_state, &n, NULL);
-            if (n > 0) {
-                setup_idle_until = make_timeout_time_ms(SETUP_IDLE_MS);
-            } else if (time_reached(setup_idle_until)) {
-                printf("wifi: setup mode unused for %d min; rebooting to try the network again\n",
-                       SETUP_IDLE_MS / 60000);
-                sleep_ms(50);
-                watchdog_reboot(0, 0, 0);
-                for (;;)
-                    ;
-            }
-        }
         break;
     }
 }

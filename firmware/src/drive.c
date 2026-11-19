@@ -56,6 +56,7 @@
 #include "drive.h"
 #include "gcr.h"
 #include "json.h"
+#include "net.h"
 #include "player.h"
 #include "stepper.h"
 #include "store.h"
@@ -73,7 +74,10 @@
 // -> D2 -> GND, R5's +3V3 hole left empty. Lit while the drive is selected
 // or writes are unsaved/being saved: "don't switch off now". Driven by
 // core 0 only (gpio_put = atomic SIO set/clr, so no read-modify-write
-// against core 1's WRPROT/RDDATA pins).
+// against core 1's WRPROT/RDDATA pins). From power-on until the first WiFi
+// join (when the onboard LED starts its heartbeat) it is simply on (Barry,
+// 2026-11-19): a lamp test and "booting"; activity only after that. Setup
+// mode: no boot lamp (off once setup mode is decided, activity as usual).
 #define PIN_LED      16
 
 #define QPOS         (STEPPER_MAX_Q + 1)
@@ -378,6 +382,13 @@ static void send(uint32_t c)
     __dmb();
 }
 
+void drive_led_power_on(void)
+{
+    gpio_init(PIN_LED);
+    gpio_set_dir(PIN_LED, GPIO_OUT);
+    gpio_put(PIN_LED, 1);
+}
+
 void drive_init(void)
 {
     for (int p = PIN_PH0; p <= PIN_WRDATA; p++) {
@@ -390,9 +401,6 @@ void drive_init(void)
     gpio_pull_up(PIN_ENABLE);
     gpio_pull_up(PIN_WRREQ);
 
-    gpio_init(PIN_LED);
-    gpio_set_dir(PIN_LED, GPIO_OUT);
-    gpio_put(PIN_LED, 0);
     gpio_init(PIN_WRPROT);
     gpio_set_dir(PIN_WRPROT, GPIO_OUT);
     gpio_put(PIN_WRPROT, 1);            // protected until an image is served writable
@@ -661,7 +669,12 @@ void drive_poll(void)
 {
     // Activity LED first: it then holds "on" through a write-back below
     // (dirty is already set), and goes off on the first pass after it.
-    gpio_put(PIN_LED, pub_en || pub_writing || (loaded && dirty_tracks()));
+    // Until the first WiFi join it stays on (see PIN_LED); not in setup
+    // mode (Barry): there it is lit only until setup mode is decided (~2 s).
+    static bool boot_lamp = true;
+    if (boot_lamp && (net_is_up() || net_setup_mode()))
+        boot_lamp = false;
+    gpio_put(PIN_LED, boot_lamp || pub_en || pub_writing || (loaded && dirty_tracks()));
 
     image_info_t im;
     bool have = store_image(&im);
