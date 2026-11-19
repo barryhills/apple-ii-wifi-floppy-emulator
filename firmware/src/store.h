@@ -7,14 +7,15 @@
 //
 // Layout (flash offsets; flash is mapped at XIP_BASE):
 //   0x000000 - 0x0FFFFF  firmware (checked at boot)
-//   0x100000             image directory, copy A  (4 KB sector)
-//   0x101000             image directory, copy B
-//   0x102000             network settings (config.c)
+//   0x100000, 0x101000   image directory ring sectors 0, 1 (4 KB each)
+//   0x102000             network settings (config.c); 0x103000 reserved
+//   0x104000 - 0x10FFFF  image directory ring sectors 2..13
 //   0x110000 - end       11 image spaces, 256 KB each (.dsk or .woz)
 //
 // The directory has STORE_ROWS fixed rows (what the user sees, numbered
-// 0..9 here, 1..10 in the API/GUI) and records which row is mounted. It is
-// written alternately to A and B with an increasing sequence number and a
+// 0..9 here, 1..10 in the API/GUI) and records which row is mounted. Each
+// change is written to the next sector of a 14-sector ring (wear levelling;
+// before v0.13.2 only A and B) with an increasing sequence number and a
 // CRC32; at boot the newest valid copy wins, so a power cut during an update
 // leaves the previous directory intact. There is one more image space than
 // rows, so a replacement is always written in full to a free space before
@@ -69,7 +70,7 @@ int  store_delete(int row, char *err, size_t errn);  // deleting the mounted row
 int  store_rename(int row, const char *name, char *err, size_t errn);   // name already sanitized
 
 // Erase one 4 KB sector at flash offset off and write len bytes there, then
-// read back. Main loop only. Used for the settings sector.
+// read back. Main loop only. The settings sector only (anything else is refused).
 int  store_write_raw_sector(uint32_t off, const void *data, size_t len, char *err, size_t errn);
 
 void sha256_bytes(const uint8_t *data, size_t n, uint8_t out[32]);

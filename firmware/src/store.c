@@ -16,7 +16,13 @@
 #include "woz.h"
 
 #define STORE_OFFSET    (1u << 20)
-#define DIR_OFFSET(i)   (STORE_OFFSET + (uint32_t)(i) * FLASH_SECTOR_SIZE)
+// The directory rotates through DIR_RING sectors (since v0.13.2; before,
+// only A and B), spreading erase wear 7x. Ring index -> sector: 0, 1 are
+// the original A and B (so older directories are found after an upgrade);
+// 2, 3 (0x102000-0x103FFF) are the settings sector and its reserved spare
+// and are skipped; ring 2..13 are sectors 4..15 (0x104000-0x10FFFF).
+#define DIR_RING        14
+#define DIR_OFFSET(i)   (STORE_OFFSET + (uint32_t)((i) < 2 ? (i) : (i) + 2) * FLASH_SECTOR_SIZE)
 #define SLOT_BASE       (STORE_OFFSET + 0x10000u)
 #define SLOT_SIZE       IMAGE_MAX_SIZE
 #define SLOT_COUNT      ((PICO_FLASH_SIZE_BYTES - SLOT_BASE) / SLOT_SIZE)
@@ -60,13 +66,18 @@ typedef struct {                        // v1, read only for migration
 } dir_v1_t;
 
 static_assert(sizeof(dir_t) <= FLASH_SECTOR_SIZE, "directory must fit a sector");
+static_assert(DIR_OFFSET(1) < STORE_CONFIG_OFFSET && DIR_OFFSET(2) > STORE_CONFIG_OFFSET + FLASH_SECTOR_SIZE,
+              "directory ring must skip the settings sector and its spare");
+static_assert(DIR_OFFSET(DIR_RING - 1) + FLASH_SECTOR_SIZE <= SLOT_BASE,
+              "directory ring must end before the image spaces");
 static_assert(SLOT_COUNT >= STORE_ROWS + 1, "need a spare image space");
 static_assert(SLOT_COUNT <= STORE_SLOTS_MAX, "avoid masks are 32 bits");
 
 static dir_t cur;               // live directory; swapped under the lwIP lock
 static dir_t nd;                // the next directory being built (one at a time, main loop;
                                 // static: keep 1.1 KB off the shared stack)
-static int   cur_sector = -1;   // 0/1 = which copy holds cur, -1 = none valid
+static int   cur_sector = -1;   // ring index holding cur (0..DIR_RING-1), -1 = none valid;
+                                // main loop only, like every directory write
 static bool  verified[STORE_ROWS];
 static uint8_t secbuf[FLASH_SECTOR_SIZE] __attribute__((aligned(4)));
 
@@ -211,8 +222,11 @@ static bool slot_in_use(const dir_t *d, unsigned slot)
     return false;
 }
 
-// Write nd as the new directory into the copy that is not live, read it
-// back, then make it live.
+// Write nd as the new directory into the next ring sector (never the live
+// one: it holds the oldest copy), read it back, then make it live. A power
+// cut at any point leaves the live copy, the newest valid one, intact.
+// Main loop only (all callers are); readers in lwIP context see cur swap
+// under the lwIP lock, as before.
 static int dir_commit(dir_t *nd, char *err, size_t errn)
 {
     nd->magic = DIR_MAGIC;
@@ -221,7 +235,7 @@ static int dir_commit(dir_t *nd, char *err, size_t errn)
     nd->seq = cur.seq + 1;
     nd->crc = crc32(nd, offsetof(dir_t, crc));
 
-    int ns = cur_sector == 0 ? 1 : 0;
+    int ns = cur_sector < 0 ? 0 : (cur_sector + 1) % DIR_RING;
     memset(secbuf, 0xFF, sizeof secbuf);
     memcpy(secbuf, nd, sizeof *nd);
     size_t plen = (sizeof *nd + FLASH_PAGE_SIZE - 1) & ~(FLASH_PAGE_SIZE - 1);
@@ -249,13 +263,13 @@ void store_init(void)
         panic("firmware (%lu bytes) overlaps image storage at 0x%lx",
               (unsigned long)fw_end, (unsigned long)STORE_OFFSET);
 
-    // Newest valid copy wins; a v1 directory (single image) is converted in
-    // RAM and written as v2 on the next change.
+    // Newest valid copy in the ring wins; a v1 directory (single image, only
+    // ever in A or B) is converted in RAM and written as v2 on the next change.
     memset(&cur, 0, sizeof cur);
     cur.current = -1;
     cur_sector = -1;
     bool found = false;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < DIR_RING; i++) {
         const void *p = (const void *)(XIP_BASE + DIR_OFFSET(i));
         const dir_t *d2 = p;
         const dir_v1_t *d1 = p;
@@ -265,7 +279,7 @@ void store_init(void)
                 cur_sector = i;
                 found = true;
             }
-        } else if (dir_v1_valid(d1)) {
+        } else if (i < 2 && dir_v1_valid(d1)) {
             if (!found || (int32_t)(d1->seq - cur.seq) > 0) {
                 memset(&cur, 0, sizeof cur);
                 cur.seq = d1->seq;
@@ -300,9 +314,8 @@ void store_init(void)
     if (cur.current >= STORE_ROWS || (cur.current >= 0 && !cur.e[cur.current].used))
         cur.current = -1;
 
-    printf("store: firmware %lu KB, %u image spaces, directory %s seq %lu, %d image(s), mounted %d\n",
-           (unsigned long)(fw_end / 1024), (unsigned)SLOT_COUNT,
-           cur_sector < 0 ? "empty" : cur_sector ? "B" : "A",
+    printf("store: firmware %lu KB, %u image spaces, directory ring %d of %d seq %lu, %d image(s), mounted %d\n",
+           (unsigned long)(fw_end / 1024), (unsigned)SLOT_COUNT, cur_sector, DIR_RING,
            (unsigned long)cur.seq, rows, (int)cur.current + 1);
 }
 
@@ -565,8 +578,7 @@ int store_rename(int row, const char *name, char *err, size_t errn)
 
 int store_write_raw_sector(uint32_t off, const void *data, size_t len, char *err, size_t errn)
 {
-    if (off % FLASH_SECTOR_SIZE || len > FLASH_SECTOR_SIZE ||
-        off < STORE_OFFSET || off >= SLOT_BASE) {
+    if (off != STORE_CONFIG_OFFSET || len > FLASH_SECTOR_SIZE) {   // never a directory sector
         snprintf(err, errn, "bad settings sector");
         return -1;
     }

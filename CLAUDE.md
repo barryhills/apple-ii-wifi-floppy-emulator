@@ -243,6 +243,33 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   VTOC/catalog navigation, binary file loads. Barry: boot "seemed quick" (not
   measured). Not yet tried: writes, both image types, D2. Next: a
   production //e with a keyboard.
+- **Resource budget (v0.13.1, 2026-11-19):** SRAM static ~506 of 512 KB
+  main: track pool 256, bench capture `cap` 64 (bench-only: first thing to
+  reclaim if RAM gets tight), lwIP pbufs 36, lwIP heap 24, upload ring 16,
+  enc/dec/track_buf 21; stacks in scratch banks. Firmware ~463 KB of the
+  1 MB region. Bigger boards don't help: every RP2350 has 520 KB SRAM;
+  PSRAM shares QMI with flash, so core 1 can't use it. Pimoroni Pico Plus
+  2 W (16 MB flash) considered and not adopted (pinout unverified against
+  Pimoroni's diagram; needs its own build); stay on Pico 2 W.
+- **//e test passed 2026-11-19 (Barry, v0.13.1):** read and write, DSK and
+  WOZ; Copy II+ verified all files; LOCK/UNLOCK; DELETE; integrity after
+  reboot. Nothing found wrong. Open concerns (Claude's ranking): power-off
+  inside the ~1-3 s save window loses that save (old image safe); flash
+  directory wear (fixed in v0.13.2); crash/reboot loses unsaved writes;
+  write cell on Barry's other //e's (check `drive.write_cell_ns`); INIT
+  untested.
+- **Directory ring (v0.13.2-dirring, 2026-11-19):** wear spread over 14
+  sectors instead of 2 (~7x life). No RAM cost (bss unchanged). No new
+  concurrency: dir_commit is still main-loop only, same callers, `cur`
+  still swapped under the lwIP lock; only the target sector index changed;
+  the live sector is never the one erased. `store_write_raw_sector` now
+  accepts only the settings sector. Tested on Barry's board: before
+  flashing, ring sectors 2-13 read erased (A seq 211, B 212); upgrade found
+  B; 30 commits wrapped the ring twice (seq 213-242 in ring order, settings
+  sector byte-identical); after reboot newest won, all 10 rows identical
+  and verified. **Downgrade hazard:** firmware before v0.13.2 reads only
+  A/B and would boot a stale directory; restore from backups if ever
+  going back. Backups: a local folder outside the repo.
 - **Several boards (Barry has 6 //e's):** every board boots as
   `a2drive.local` (config.json) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default
@@ -440,9 +467,11 @@ them). Internally, a 256 KB flash area is an "image space".
 
 ### Flash layout (src/store.h)
 
-0–1 MB firmware (checked at boot) · 1 MB: image directory copies A/B (CRC32 +
-sequence number, alternate writes, newest valid wins) · +8 KB: reserved for
-stored config · 1 MB+64 KB to 4 MB: 11 image spaces of 256 KB. A new image
+0–1 MB firmware (checked at boot) · 1 MB: image directory ring of 14
+sectors (CRC32 + sequence number, each change to the next sector, newest
+valid wins; since v0.13.2, before only A/B): ring 0-1 = 0x100000-0x101FFF
+(old A/B), ring 2-13 = 0x104000-0x10FFFF · 0x102000 stored config,
+0x103000 reserved · 1 MB+64 KB to 4 MB: 11 image spaces of 256 KB. A new image
 goes to a free space, is read back, then the directory switches. Flash writes
 use `flash_safe_execute`, one 4 KB sector at a time. **Core 1 is never
 locked out** (`PICO_FLASH_ASSUME_CORE1_SAFE=1`): flash writes only mask core
