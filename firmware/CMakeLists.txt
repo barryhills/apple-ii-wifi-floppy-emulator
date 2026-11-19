@@ -100,7 +100,7 @@ target_compile_options(a2drive PRIVATE -Wall -Wextra -fconserve-stack)
 # Vendored code: build as-is, without our warning set.
 set_source_files_properties(src/third_party/dhcpserver/dhcpserver.c PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.13.2-dirring"
+    A2DRIVE_VERSION="0.13.3-led"
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
     PICO_USE_STACK_GUARDS=1     # M33 MSPLIM: stack overflow faults at once (see diag.c)
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages

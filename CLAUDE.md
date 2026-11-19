@@ -270,6 +270,21 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   and verified. **Downgrade hazard:** firmware before v0.13.2 reads only
   A/B and would boot a stale directory; restore from backups if ever
   going back. Backups: a local folder outside the repo.
+- **Activity LED (v0.13.3-led, 2026-11-19, Barry's call):** D2 becomes a
+  "don't switch off now" light instead of a power LED (heartbeat + OLED are
+  proof of life). Bodge (Barry: on the back): fit R5 and D2 normally; on
+  the bottom layer cut the +3V3 trace at R5's +3V3 pad (the pad farther
+  from D2): it is a leaf stub, 2.54 mm toward the J1 edge then a turn
+  (from the ordered Gerbers, GBL); wire that pad to Pico pin 21 (GP16),
+  whose pad has no trace. Lit while selected (ENABLE* low), while
+  writing, or while writes are unsaved or being saved; off = safe to power
+  off. Set by core 0 at the top of `drive_poll()` (atomic SIO set/clr;
+  core 1 untouched), so it lags by one main-loop pass (longer while core 0
+  is blocked, e.g. a bench test or one upload sector write). `/status`
+  pins shows `LED=`. Bench test (no LED fitted): /test/write on a scratch
+  row showed LED=1 while dirty, LED=0 on the pass after the save.
+  This is also the answer to concern #1 (power-off in the save window).
+  Barry fitted the bodge and tested it 2026-11-19: working.
 - **Several boards (Barry has 6 //e's):** every board boots as
   `a2drive.local` (config.json) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default
@@ -365,10 +380,12 @@ header is unkeyed — a reversed ribbon puts ±12V on logic and kills U1/U2.
 | GP13 (17) | SCL | I2C0 | |
 | GP14 (19) | UP* | in | button, internal pull-up |
 | GP15 (20) | DOWN* | in | button, internal pull-up |
+| GP16 (21) | ACT LED | out | rev B bodge on the back: cut R5's +3V3 stub, wire R5's +3V3 pad to pin 21 (v0.13.3) |
 | RUN (30) | RESTART* | — | SW4 hard-resets the Pico |
 
 Reflash in place: hold BOOTSEL, tap SW4 (RESTART), release BOOTSEL.
-D2 is a plain power LED on 3.3V, not a GPIO. The Pico W's onboard LED is driven
+D2 was a plain power LED on 3.3V; since v0.13.3 it is the activity LED on
+GP16 via a bodge on the back of the board (one cut, one wire). The Pico W's onboard LED is driven
 through the CYW43 WiFi chip, not a normal GPIO.
 
 ### Board rev B layout

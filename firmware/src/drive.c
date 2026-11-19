@@ -69,6 +69,12 @@
 #define PIN_WRREQ    7      // WRREQ_3V*, active low
 #define PIN_WRDATA   8      // WRDATA_3V
 #define PIN_WRPROT   11     // WRPROT_3V: high = write-protected
+// Activity LED (rev B bodge, Barry 2026-11-19): GP16 (Pico pin 21) -> R5
+// -> D2 -> GND, R5's +3V3 hole left empty. Lit while the drive is selected
+// or writes are unsaved/being saved: "don't switch off now". Driven by
+// core 0 only (gpio_put = atomic SIO set/clr, so no read-modify-write
+// against core 1's WRPROT/RDDATA pins).
+#define PIN_LED      16
 
 #define QPOS         (STEPPER_MAX_Q + 1)
 #define NO_TRACK     0xFF
@@ -384,6 +390,9 @@ void drive_init(void)
     gpio_pull_up(PIN_ENABLE);
     gpio_pull_up(PIN_WRREQ);
 
+    gpio_init(PIN_LED);
+    gpio_set_dir(PIN_LED, GPIO_OUT);
+    gpio_put(PIN_LED, 0);
     gpio_init(PIN_WRPROT);
     gpio_set_dir(PIN_WRPROT, GPIO_OUT);
     gpio_put(PIN_WRPROT, 1);            // protected until an image is served writable
@@ -646,6 +655,10 @@ fail:
 
 void drive_poll(void)
 {
+    // Activity LED first: it then holds "on" through a write-back below
+    // (dirty is already set), and goes off on the first pass after it.
+    gpio_put(PIN_LED, pub_en || pub_writing || (loaded && dirty_tracks()));
+
     image_info_t im;
     bool have = store_image(&im);
     int row = store_mounted();
@@ -753,13 +766,13 @@ size_t drive_status_json(char *buf, size_t n)
     // The connector as the Pico sees it now (3.3 V side of U1/U2), for
     // bring-up: phases PH0..PH3, ENABLE*, WRREQ*, WRDATA in; WRPROT, RDDATA out.
     uint32_t in = sio_hw->gpio_in;
-    char pins[64];
-    snprintf(pins, sizeof pins, "PH0-3=%lu%lu%lu%lu EN*=%lu WRREQ*=%lu WRDATA=%lu WRPROT=%lu RDDATA=%lu",
+    char pins[72];
+    snprintf(pins, sizeof pins, "PH0-3=%lu%lu%lu%lu EN*=%lu WRREQ*=%lu WRDATA=%lu WRPROT=%lu RDDATA=%lu LED=%lu",
              (unsigned long)(in >> 2 & 1), (unsigned long)(in >> 3 & 1),
              (unsigned long)(in >> 4 & 1), (unsigned long)(in >> 5 & 1),
              (unsigned long)(in >> PIN_ENABLE & 1), (unsigned long)(in >> PIN_WRREQ & 1),
              (unsigned long)(in >> PIN_WRDATA & 1), (unsigned long)(in >> PIN_WRPROT & 1),
-             (unsigned long)(in >> 10 & 1));
+             (unsigned long)(in >> 10 & 1), (unsigned long)(in >> PIN_LED & 1));
     int len = snprintf(buf, n,
         "{\"pins\":\"%s\",\"serving\":%s,\"enabled\":%s,\"track\":%d.%02d,\"quarter_track\":%d,"
         "\"on_data\":%s,\"steps\":%lu,\"selects\":%lu,\"load_ms\":%lu,\"loop_max_us\":%lu,"
