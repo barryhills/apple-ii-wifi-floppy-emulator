@@ -29,13 +29,10 @@
 
 typedef enum { FMT_NONE = 0, FMT_DSK = 1, FMT_WOZ1 = 2, FMT_WOZ2 = 3 } image_format_t;
 
-#define IMG_FLAG_WRITABLE  0x01     // clear = protected ("P" in the GUI); honoured once writes exist
-
 typedef struct {
     char           name[IMAGE_NAME_MAX];
     uint32_t       size;
     image_format_t format;
-    uint8_t        flags;
     uint8_t        sha256[32];
     int64_t        uploaded;        // Unix seconds; 0 = unknown
     bool           verified;        // SHA-256 of the flash contents matches
@@ -60,11 +57,6 @@ const char *store_format_name(image_format_t f);    // "dsk", "woz1", "woz2"
 int  store_write_begin(uint32_t size, uint32_t avoid_mask, char *err, size_t errn);
 int  store_write_chunk(const uint8_t *data, size_t n, char *err, size_t errn);
 int  store_write_finish(int row, const char *name, int64_t uploaded, char *err, size_t errn);
-// The same, but the row keeps the given flags (store_write_finish clears
-// them: new uploads arrive protected). For writing back what the Apple
-// wrote into the mounted image.
-int  store_write_finish_flags(int row, const char *name, int64_t uploaded, uint8_t flags,
-                              char *err, size_t errn);
 // True if every byte of the free image space the next store_write_begin
 // would pick is erased; else erase one more 4 KB sector of it (~50 ms) and
 // return false. Lets idle time prepare a space, so a later write-back only
@@ -74,7 +66,6 @@ void store_write_abort(void);
 
 int  store_mount(int row, char *err, size_t errn);   // -1 = eject; an empty row is refused
 int  store_delete(int row, char *err, size_t errn);  // deleting the mounted row ejects
-int  store_set_writable(int row, bool writable, char *err, size_t errn);
 int  store_rename(int row, const char *name, char *err, size_t errn);   // name already sanitized
 
 // Erase one 4 KB sector at flash offset off and write len bytes there, then

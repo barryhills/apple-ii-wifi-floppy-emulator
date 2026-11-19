@@ -9,8 +9,8 @@
 // core 0 writes flash, which stalls flash reads): it watches ENABLE* and the
 // four phase lines, moves the head (stepper.h), and points the read-data
 // player (player.h) at the track under the head, keeping the disk's angle
-// across head moves. WRPROT is high unless the mounted image
-// may be written (row unlocked; for WOZ, the file's own flag allows it).
+// across head moves. WRPROT is high only while no image is served; every
+// image is writable.
 // While the Apple writes (ENABLE* and WRREQ* low), core 1 decodes WRDATA
 // into the track under the head; core 0 writes the image back to flash.
 //

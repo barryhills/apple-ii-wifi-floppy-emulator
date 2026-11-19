@@ -303,10 +303,14 @@ int benchtest_seek(int q, bool flash, char *err, size_t errn)
         drive_reset_loop_max();
         uint32_t f0 = timer_hw->timerawl;
         if (row >= 0 && store_row(row, &im)) {
-            bool w = im.flags & IMG_FLAG_WRITABLE;
-            if (store_set_writable(row, !w, e2, sizeof e2) == 0)
+            // Rename the row (last character changed) and back.
+            static char tmp[IMAGE_NAME_MAX];
+            size_t len = strlen(im.name);
+            memcpy(tmp, im.name, len + 1);
+            tmp[len - 1] = tmp[len - 1] == '~' ? '_' : '~';
+            if (store_rename(row, tmp, e2, sizeof e2) == 0)
                 flash_writes++;
-            if (store_set_writable(row, w, e2, sizeof e2) == 0)
+            if (store_rename(row, im.name, e2, sizeof e2) == 0)
                 flash_writes++;
         }
         flash_us = timer_hw->timerawl - f0;
@@ -542,10 +546,6 @@ int benchtest_write(int track, int sector, uint32_t cell_ns, uint32_t seed, char
     image_info_t im;
     if (!s.loaded || !store_image(&im)) {
         snprintf(err, errn, "the drive is not serving an image");
-        return -1;
-    }
-    if (!s.writable) {
-        snprintf(err, errn, "the mounted image is write-protected (unlock it to test)");
         return -1;
     }
     if (track < 0 || track >= GCR_TRACKS || sector < 0 || sector > 15 ||

@@ -14,12 +14,11 @@ h1{font-size:20px;margin:0 0 16px}
 h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 10px;font-weight:600}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
 #list{outline:none}
-.row{display:grid;grid-template-columns:22px 22px 1fr;align-items:center;gap:6px;
+.row{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:6px;
      padding:1px 8px;line-height:1.5;border-radius:4px;cursor:pointer;font-weight:600;user-select:none}
 .row.sel{background:var(--sel)}
 .row.empty .name{color:var(--mut);font-weight:400}
-.tog{text-align:center}.tog.off{opacity:.3}.tog:hover{opacity:1}
-.tog.locked{filter:brightness(0)}   /* locked: the emoji as a pure black silhouette */
+.tog{text-align:center}
 .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #detail{color:var(--mut);font-size:13px;margin:12px 2px 0;min-height:1.4em;overflow-wrap:anywhere}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
@@ -99,16 +98,13 @@ function render() {
   list.replaceChildren();
   rows.forEach((r, i) => {
     const row = el('div', '', 'row' + (i === sel ? ' sel' : '') + (r ? '' : ' empty'));
-    // The mount marker and the lock are both the state and the control.
+    // The mount marker is both the state and the control.
     const m = el('div', r ? (i + 1 === mounted ? '●' : '○') : '', 'tog');
-    const p = el('div', r ? (r.protected ? '🔒' : '🔓') : '', 'tog' + (r && !r.protected ? ' off' : r ? ' locked' : ''));
     if (r) {
       m.title = i + 1 === mounted ? 'Mounted: click to unmount' : 'Click to mount';
-      p.title = r.protected ? 'Protected: click to unprotect' : 'Click to protect';
       m.onclick = e => { e.stopPropagation(); sel = i; mount(); };
-      p.onclick = e => { e.stopPropagation(); sel = i; protect(); };
     }
-    row.append(m, p, el('div', r ? r.name : '<empty>', 'name'));
+    row.append(m, el('div', r ? r.name : '<empty>', 'name'));
     row.onclick = () => { sel = i; render(); list.focus(); };
     list.append(row);
   });
@@ -192,14 +188,6 @@ function mount() {
     op('POST', '/eject', `Unmounted ${r.name}; the drive is empty.`);
   else
     op('POST', `/mount/${sel + 1}`, `Mounted ${r.name}.`);
-}
-
-function protect() {
-  const r = rows[sel];
-  if (!r || busy) return;
-  const on = r.protected ? 0 : 1;
-  op('POST', `/protect/${sel + 1}?on=${on}`,
-     on ? `${r.name} is protected.` : `${r.name} is unprotected.`);
 }
 
 $('download').onclick = () => {

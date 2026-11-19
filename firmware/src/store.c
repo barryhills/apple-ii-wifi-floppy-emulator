@@ -26,6 +26,8 @@
 
 // Same 112-byte layout in v1 and v2 (v1's uint16 format == v2's format +
 // flags=0 on little-endian), so v1 entries copy across unchanged.
+// flags: unused since v0.14 (was the write-protect bit; every image is
+// now writable). Kept so the on-flash layout is unchanged; written as 0.
 typedef struct {
     uint8_t  used;
     uint8_t  slot;
@@ -312,7 +314,6 @@ bool store_row(int row, image_info_t *out)
     memcpy(out->name, e->name, IMAGE_NAME_MAX);
     out->size = e->size;
     out->format = (image_format_t)e->format;
-    out->flags = e->flags;
     memcpy(out->sha256, e->sha256, 32);
     out->uploaded = e->uploaded;
     out->verified = verified[row];
@@ -447,12 +448,6 @@ void store_write_abort(void)
 
 int store_write_finish(int row, const char *name, int64_t uploaded, char *err, size_t errn)
 {
-    return store_write_finish_flags(row, name, uploaded, 0, err, errn);
-}
-
-int store_write_finish_flags(int row, const char *name, int64_t uploaded, uint8_t flags,
-                             char *err, size_t errn)
-{
     if (!wr.active) {
         snprintf(err, errn, "no write in progress");
         return -1;
@@ -494,7 +489,6 @@ int store_write_finish_flags(int row, const char *name, int64_t uploaded, uint8_
     e->format = (uint8_t)fmt;
     e->size = wr.size;
     e->uploaded = uploaded;
-    e->flags = flags;
     sha256_bytes(fl, wr.size, e->sha256);           // hash what is actually stored
     strncpy(e->name, name, IMAGE_NAME_MAX - 1);
     if (dir_commit(&nd, err, errn))
@@ -545,24 +539,6 @@ int store_delete(int row, char *err, size_t errn)
         return -1;
     verified[row] = false;
     printf("store: row %d deleted\n", row + 1);
-    return 0;
-}
-
-int store_set_writable(int row, bool writable, char *err, size_t errn)
-{
-    if (row < 0 || row >= STORE_ROWS || !cur.e[row].used) {
-        snprintf(err, errn, "that row is empty");
-        return -1;
-    }
-    uint8_t flags = writable ? (cur.e[row].flags | IMG_FLAG_WRITABLE)
-                             : (cur.e[row].flags & (uint8_t)~IMG_FLAG_WRITABLE);
-    if (flags == cur.e[row].flags)
-        return 0;
-    nd = cur;
-    nd.e[row].flags = flags;
-    if (dir_commit(&nd, err, errn))
-        return -1;
-    printf("store: row %d %s\n", row + 1, writable ? "writable" : "write-protected");
     return 0;
 }
 

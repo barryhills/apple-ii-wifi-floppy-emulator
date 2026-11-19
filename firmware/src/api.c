@@ -7,7 +7,6 @@
 //   DELETE /image/N       clear row N
 //   POST   /mount/N       mount row N (refused if the row is empty)
 //   POST   /eject         unmount: the drive becomes empty
-//   POST   /protect/N?on=1|0    protect (P) or unprotect row N
 //   GET    /settings      hostname, SSID, source (never the password)
 //   POST   /settings      form body ssid=&password=&hostname= ; saves, restarts
 //   POST   /restart       restart the drive
@@ -71,10 +70,9 @@ static uint32_t   ring_head, ring_tail; // free-running byte counters
 static uint8_t    readers[STORE_SLOTS_MAX];    // downloads per image space
 static int        up_row;
 
-typedef enum { OP_NONE, OP_MOUNT, OP_DELETE, OP_WRITABLE, OP_RENAME, OP_SETTINGS, OP_STREAM } op_t;
+typedef enum { OP_NONE, OP_MOUNT, OP_DELETE, OP_RENAME, OP_SETTINGS, OP_STREAM } op_t;
 static op_t       op;
 static int        op_row;
-static bool       op_on;
 static char       op_name[IMAGE_NAME_MAX];
 static char       set_body[512 + 1];            // POST /settings form
 static char       set_ssid[CFG_SSID_MAX + 1], set_pw[CFG_PASSWORD_MAX + 1],
@@ -425,9 +423,9 @@ static void get_images(conn_t *c)
             snprintf(up, sizeof up, "%lld", (long long)im.uploaded);
         o += (size_t)snprintf(body + o, sizeof body - o,
             "%s{\"name\":\"%s\",\"format\":\"%s\",\"size\":%lu,\"sha256\":\"%s\","
-            "\"uploaded\":%s,\"verified\":%s,\"protected\":%s}",
+            "\"uploaded\":%s,\"verified\":%s}",
             sep, name, store_format_name(im.format), (unsigned long)im.size, hex, up,
-            im.verified ? "true" : "false", (im.flags & IMG_FLAG_WRITABLE) ? "false" : "true");
+            im.verified ? "true" : "false");
         if (o >= sizeof body)
             break;
     }
@@ -467,8 +465,7 @@ static void run_op(void)
     int rc = op == OP_MOUNT    ? store_mount(op_row, err, sizeof err) :
              op == OP_DELETE   ? store_delete(op_row, err, sizeof err) :
              op == OP_RENAME   ? store_rename(op_row, op_name, err, sizeof err) :
-             op == OP_SETTINGS ? config_save(set_ssid, set_pw, set_host, err, sizeof err) :
-                                 store_set_writable(op_row, op_on, err, sizeof err);
+                                 config_save(set_ssid, set_pw, set_host, err, sizeof err);
     if (op == OP_SETTINGS) {
         memset(set_pw, 0, sizeof set_pw);
         memset(set_body, 0, sizeof set_body);
@@ -696,17 +693,6 @@ static void handle(conn_t *c)
         if (!post)
             return method_not_allowed(c, "POST");
         start_op(c, OP_MOUNT, -1);
-    } else if (strncmp(p, "/protect/", 9) == 0) {
-        int row = parse_row(p + 9);
-        char on[4];
-        if (row < 0)
-            return http_respond_text(c, 404, "rows are 1 to 10\n");
-        if (!post)
-            return method_not_allowed(c, "POST");
-        if (!http_query_param(c, "on", on, sizeof on) || (strcmp(on, "0") && strcmp(on, "1")))
-            return http_respond_text(c, 400, "need ?on=1 or ?on=0\n");
-        op_on = on[0] == '0';           // stored as "writable" = not protected
-        start_op(c, OP_WRITABLE, row);
     } else if (strcmp(p, "/image") == 0) {
         if (!get)
             return method_not_allowed(c, "GET");

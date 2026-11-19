@@ -316,11 +316,13 @@ void oled_poll(void)
         } else if (ev & (1u << B_SELECT)) {
             mount_selected(rows, n);
         } else {
-            // Barry, 2026-11-14: UP (GP14, pin 19) goes to the next image
-            // (higher number), DOWN to the previous one.
-            if ((ev & (1u << B_UP)) && cursor < n - 1)
+            // Barry, 2026-11-19 (rev B board): DOWN (GP15, pin 20) goes to
+            // the next image (higher number), UP (GP14, pin 19) to the
+            // previous one. The 2026-11-14 opposite mapping came from a
+            // breadboard with the two buttons swapped.
+            if ((ev & (1u << B_DOWN)) && cursor < n - 1)
                 cursor++;
-            if ((ev & (1u << B_DOWN)) && cursor > 0)
+            if ((ev & (1u << B_UP)) && cursor > 0)
                 cursor--;
         }
         pick_idle = make_timeout_time_ms(PICK_IDLE_MS);

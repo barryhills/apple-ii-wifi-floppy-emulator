@@ -111,7 +111,8 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   hostname.local / IP (or "connecting...") / brief message / mounted image
   name. Any button opens the picker: header "Mount N of M" + 3-line
   scrolling window of filled rows, cursor in inverse video, '*' = mounted;
-  **UP (pin 19) = next image, DOWN (pin 20) = previous** (Barry's choice);
+  **UP (pin 19) = previous image, DOWN (pin 20) = next** (flipped
+  2026-11-19 on the rev B board; the breadboard had the buttons swapped);
   hold repeats; SELECT mounts; 15 s idle -> home. Mount refused while the
   web API is busy (`api_busy()`). Breadboard: timing jumper GP10 (pin 14)
   -> GP8 (pin 11) for milestone 4.
@@ -198,9 +199,9 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   writes ~3.91 us cells). Bits go into the RAM track under the head from
   the cell under the head at WRREQ*, one track cell per written cell (2%
   longer than a real head would lay them; harmless, ends well inside gap 3).
-  Writes only while ENABLE*+WRREQ* low, the head on data and the image
-  writable: WRPROT = row locked OR WOZ INFO write-protected OR nothing
-  served. **Gap resync:** Virtual ][ WOZ gaps are plain 8-bit FFs (gap 2 =
+  Writes only while ENABLE*+WRREQ* low, the head on data and an image
+  served: WRPROT high only while nothing is served (write-protect removed
+  in v0.13.1, see below). **Gap resync:** Virtual ][ WOZ gaps are plain 8-bit FFs (gap 2 =
   72 cells, gap 3 = 120); a write ending mid-run misframed the next
   sector's address field (found by the bench test); core 1 now rewrites an
   all-1s run that runs into D5 AA as 10-bit self-syncs ending at the D5.
@@ -210,7 +211,7 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   counters (odd = being written) so writes during a save are never lost;
   .dsk takes the sectors `gcr_decode_track` finds (a sector that no longer
   decodes keeps its old bytes; counted as lost_sectors); WOZ takes the bits
-  and a new CRC. Row keeps name and lock; "uploaded" becomes the save time.
+  and a new CRC. Row keeps its name; "uploaded" becomes the save time.
   Idle time pre-erases the next free image space (one 4 KB sector per
   250 ms; writes skip erased sectors): a save then takes ~0.4 s, ~1.5-2.6 s
   if not yet erased. Tests (Claude): host `tools/host/gcrdec_test.c`
@@ -226,6 +227,14 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   at the Pico: bring-up aid), writable, writing, writes, write_cell_ns,
   dirty_tracks, saves, save_failures, lost_sectors, gap_resyncs, save.
   OLED: "Track 17  ON W" while writing, "*" while unsaved.
+- **Write-protect removed 2026-11-19 (v0.13.1-nowp, Barry: "all images
+  read/write"; saves ~1.3 KB flash).** Gone: lock column on the page,
+  `POST /protect/N`, `protected` in `/images`, `store_set_writable`,
+  `store_write_finish_flags`, honouring a WOZ's INFO write-protect byte
+  (the byte is kept in the file as is). The directory entry's `flags`
+  byte stays (layout unchanged, written 0, ignored). WRPROT stays high
+  while nothing is served. Bench `/test/seek?flash=1` now renames the row
+  and back for its two directory writes. Flashing via `picotool -f`.
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
   (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
@@ -247,7 +256,9 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
 - ninja 1.13.2, picotool 2.3.1 (Homebrew), cmake 4.4.3 (no issues seen).
 - Homebrew has dropped Intel bottles (Tier 3); MacPorts is the fallback.
 - Build: `cmake -S . -B build -G Ninja && ninja -C build`.
-- Flash: BOOTSEL, then `picotool load -v -x build/X.uf2`. Don't touch the
+- Flash: `picotool load -f -v -x build/X.uf2` (`-f` reboots running firmware
+  into BOOTSEL over USB; no buttons). Hung Pico: BOOTSEL + RESTART, then
+  the same command without `-f`. Don't touch the
   RP2350 drive in Finder (crashed Finder/Safari once).
 - Serial: use `/dev/cu.usbmodem*`, not `tty.*`. `screen /dev/cu.usbmodemNNNN 115200`.
 - `picotool erase` without `--range` fails: it can't determine the flash size
@@ -385,14 +396,13 @@ order (only a host-test scenario depends on it).
 | Request | Purpose |
 |---|---|
 | `GET /` | the page (`src/web/index.html`, embedded at build) |
-| `GET /images` | JSON list: mounted row, busy, 10 rows (name, format, size, sha256, uploaded, verified, protected) or null |
+| `GET /images` | JSON list: mounted row, busy, 10 rows (name, format, size, sha256, uploaded, verified) or null |
 | `PUT /image/N?name=X` | upload .dsk (143,360 bytes) or .woz (up to 256 KB) into row N, replacing it |
 | `GET /image/N` | download row N as uploaded |
 | `DELETE /image/N` | clear row N (if mounted, the drive becomes empty) |
 | `POST /mount/N` | mount row N (an empty row is refused, 409) |
 | `POST /eject` | unmount: drive empty |
 | `POST /rename/N?name=X` | rename row N; keeps the file type (a typed .dsk/.do/.woz is dropped) |
-| `POST /protect/N?on=1\|0` | protect / unprotect row N (WRPROT and the write gate follow it, v0.13) |
 | `GET /image` | download the mounted image |
 | `GET /status` | device JSON incl. mounted_row and mounted image |
 | `GET /settings` | hostname, SSID, password_set, source (never the password) |
@@ -411,9 +421,8 @@ error; plus heap_headroom/heap_in_use. The OLED's third line shows the head
 
 **GUI vocabulary (decided 2026-11-13, revised 2026-11-14):** the collection
 of images is the **carousel**. The image the drive serves is the **mounted**
-image (● on its row; earlier tag M); a write-protected image shows 🔒
-(earlier tag P; "W" was dropped as ambiguous). New
-uploads arrive protected. **Users
+image (● on its row; earlier tag M). No write-protect (removed
+2026-11-19): every image is writable. **Users
 never see the word "slot"** (it means Apple slot / drive to
 them). Internally, a 256 KB flash area is an "image space".
 
@@ -449,7 +458,7 @@ locked out** (`PICO_FLASH_ASSUME_CORE1_SAFE=1`): flash writes only mask core
 | 5 | Read on the //e | `CATALOG` lists the pushed image from the vdisk (as D1 or D2); `BLOAD`/`RUN` works; booting it as D1 works | yes |
 | 5 (firmware built) | Barry's test: //e off, meter J1/ribbon (pin 1 GND, pin 11 +5 V), plug in as D2 first; power on; OLED should show "Track 0"; `CATALOG,D2` (head moves: OLED shows track and ON); `BRUN`/`RUN`; then as D1: boot. If nothing reads: `curl -X POST 'http://vdisk.local/test/rdpulse?idle=high'` and retry (then tell Claude) | yes |
 | 6 | Writes | `SAVE`/`BSAVE` to the vdisk; pull image; file present and image consistent on the Mac | yes |
-| 6 (firmware built) | Barry's test: unlock a scratch row, mount it; `SAVE`/`BSAVE` a file; wait for the drive light to go off (~1 s) + ~1 s; `CATALOG`; download the image; open it in CiderPress2 / Virtual ][. `/status` drive.write_cell_ns shows the //e's real write cell | yes |
+| 6 (firmware built) | Barry's test: mount a scratch row; `SAVE`/`BSAVE` a file; wait for the drive light to go off (~1 s) + ~1 s; `CATALOG`; download the image; open it in CiderPress2 / Virtual ][. `/status` drive.write_cell_ns shows the //e's real write cell | yes |
 | 7+ | Knock, selector, button navigation, WOZ input | later | yes |
 
 Write decode can also be tested pre-board by feeding the milestone-4 capture
@@ -458,13 +467,13 @@ into the decoder.
 ## Deferred / open items
 
 - **Division of control (decided 2026-11-13, Barry; revised same day):**
-  - *Web page:* everything: upload, download, delete, mount (M), protect
-    (P), rename, settings, restart.
+  - *Web page:* everything: upload, download, delete, mount (M), rename,
+    settings, restart.
   - *Drive (OLED + buttons):* setup-mode bootstrap (UP+DOWN at power-on);
     otherwise navigate the list and **change the mounted image (M) only**.
-    Never P, delete, upload or rename.
+    Never delete, upload or rename.
   - *The //e via a disk copier (Copy II+):* writes into the **mounted**
-    image only, and only if it is **not P**: ordinary drive writes (milestone 6).
+    image only: ordinary drive writes (milestone 6).
   - *The //e filling an empty slot:* wanted, but the **absolute last feature**.
   - *A //e selector program* (M, P, rename): wanted, optional, after the
     core. Needs the knock analysis.

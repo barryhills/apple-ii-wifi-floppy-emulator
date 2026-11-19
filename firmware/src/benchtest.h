@@ -18,15 +18,14 @@
 //   releases them. Checks the head position, that GP10 carries that track
 //   (or nothing, for an empty position), and that it is at the angle core 1
 //   reckons the disk is at. flash: during the capture, core 0 writes flash
-//   (the mounted row's protect flag toggled and restored: two directory
+//   (the mounted row renamed and renamed back: two directory
 //   erase/program cycles, net no change), which must not disturb core 1.
 //
 // Non-blocking after the start: poll from the main loop until it reports.
 
 int  benchtest_stream(unsigned track, uint32_t cells, uint32_t start, char *err, size_t errn);
 int  benchtest_seek(int q, bool flash, char *err, size_t errn);
-// write (milestone 6): with the drive running and the mounted image
-//   unlocked, writes physical sector `sector` of `track` with 256
+// write (milestone 6): with the drive running, writes physical sector `sector` of `track` with 256
 //   pseudo-random bytes (from seed) the way DOS 3.3 does: a test PIO plays
 //   the WRDATA waveform (5 self-syncs + data field, write cell cell_ns) on
 //   GP22 (unconnected) and the write capture listens there; the head is

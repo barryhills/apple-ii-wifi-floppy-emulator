@@ -16,17 +16,18 @@
 // software that times sectors across tracks may). Silence (empty position or
 // parked) keeps the old anchor turning.
 //
-// Writes (milestone 6). While ENABLE* and WRREQ* are both low and the image
-// is writable, core 1 takes WRDATA edge intervals from a PIO timer
+// Writes (milestone 6). While ENABLE* and WRREQ* are both low and an image
+// is served, core 1 takes WRDATA edge intervals from a PIO timer
 // (wrcap.pio), turns them into bit cells (wrdec.h) and writes those bits
 // into the RAM track under the head, from the cell under the head when the
 // write began, one track cell per written cell. (The //e writes ~3.91 us
 // cells, the track plays 4 us cells: a real disk would hold the written
 // bits ~2% closer together; in a fixed-length bit track, as WOZ is, they
 // simply take consecutive cells. A DOS sector write runs ~70 cells past
-// where the real head would be when it ends, inside gap 3.) A protected
-// image is never written (the real drive's write-protect switch kills the
-// write current) and WRPROT reads high.
+// where the real head would be when it ends, inside gap 3.) Every image is
+// writable (Barry, 2026-11-19: no write-protect, not even a WOZ's INFO
+// flag); WRPROT reads high, and nothing is written, only while no image is
+// served.
 //
 // Each track has a generation counter (core 1: +1 when a write starts, +1
 // when it ends, so odd = being written). Core 0 writes the image back to
@@ -116,7 +117,6 @@ static char error[96];
 static uint8_t enc[GCR_TRACK_BUF];          // encode / write-back scratch (main loop only)
 static uint32_t saved_gen[QPOS];            // trk_gen as last written to flash
 static bool scratch_lent;                   // a bench test holds enc
-static bool loaded_woz_wp;                  // the WOZ's INFO says write-protected
 static uint32_t flush_count, flush_fail, flush_ms, flush_lost_sectors;
 static char flush_msg[176];
 static absolute_time_t flush_retry_at, prepare_at;
@@ -504,12 +504,6 @@ static void reload(void)
     load_ms = (uint32_t)((time_us_64() - t0) / 1000);
     for (int i = 0; i < QPOS; i++)
         saved_gen[i] = trk_gen[i];              // the pool matches flash
-    loaded_woz_wp = false;
-    if (im.format != FMT_DSK) {
-        static woz_info_t w;
-        char e2[8];
-        loaded_woz_wp = woz_parse(im.data, im.size, &w, e2, sizeof e2) == 0 && w.write_protected;
-    }
     loaded = true;
     if (!suspended)
         send(CMD_RUN);
@@ -627,7 +621,7 @@ static int writeback(int row, const image_info_t *im)
             store_write_abort();                // written to meanwhile: next time
             return 1;
         }
-    if (store_write_finish_flags(row, im->name, clock_unix(), im->flags, err, sizeof err))
+    if (store_write_finish(row, im->name, clock_unix(), err, sizeof err))
         goto fail;
     for (int i = 0; i < QPOS; i++)
         if (d[i])
@@ -679,8 +673,8 @@ void drive_poll(void)
         reload();
         return;
     }
-    // Write protect: the row's lock, or the WOZ's own flag; nothing served = protected.
-    want_wp = !loaded || !(im.flags & IMG_FLAG_WRITABLE) || loaded_woz_wp;
+    // Write protect only while nothing is served.
+    want_wp = !loaded;
 
     // Idle: prepare a free image space so the next write-back only programs.
     if (!api_store_busy() && !pub_writing && time_reached(prepare_at)) {

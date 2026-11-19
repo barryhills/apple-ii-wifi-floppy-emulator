@@ -12,8 +12,7 @@
 #include "status.h"
 #include "store.h"
 
-// "drive" is the emulated drive's state (drive.h). The drive reports
-// write-protected until writes are implemented (milestone 6).
+// "drive" is the emulated drive's state (drive.h).
 //
 // Scratch buffers are static to keep this off the (small) interrupt-time
 // stack, so callers must hold the lwIP lock (lwIP callbacks already do).
@@ -65,7 +64,7 @@ size_t status_json(char *buf, size_t n)
     int len = snprintf(buf, n,
         "{\"firmware\":\"%s\",\"board_id\":\"%s\",\"hostname\":\"%s\","
         "\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi_dbm\":%s,\"uptime_s\":%llu,"
-        "\"time\":%s,\"mounted_row\":%d,\"image\":%s,\"drive\":%s,\"write_protect\":true,"
+        "\"time\":%s,\"mounted_row\":%d,\"image\":%s,\"drive\":%s,"
         "\"last_reset\":\"%s\",\"stack_free\":%lu,\"heap_headroom\":%lu,\"heap_in_use\":%lu,\"settings\":\"%s\",\"setup_mode\":%s}\n",
         A2DRIVE_VERSION, id, net_hostname(), ssid, net_ip_str(), rssi,
         (unsigned long long)(time_us_64() / 1000000), now, store_mounted() + 1, image, drive,
