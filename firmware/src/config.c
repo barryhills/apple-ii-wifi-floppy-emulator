@@ -5,7 +5,6 @@
 #include "hardware/flash.h"
 
 #include "config.h"
-#include "config_defaults.h"
 #include "crc32.h"
 #include "store.h"
 
@@ -26,7 +25,6 @@ typedef struct {
 static char ssid[CFG_SSID_MAX + 1];
 static char password[CFG_PASSWORD_MAX + 1];
 static char hostname[CFG_HOSTNAME_MAX + 1];
-static cfg_source_t source;
 
 static void copy(char *dst, size_t n, const char *src)
 {
@@ -45,42 +43,17 @@ void config_load(void)
         copy(ssid, sizeof ssid, r->ssid);
         copy(password, sizeof password, r->password);
         copy(hostname, sizeof hostname, r->hostname);
-        source = CFG_STORED;
+        printf("config: WiFi \"%s\", hostname %s\n", ssid, hostname);
     } else {
-        copy(ssid, sizeof ssid, CFG_DEFAULT_SSID);
-        copy(password, sizeof password, CFG_DEFAULT_PASSWORD);
+        ssid[0] = password[0] = 0;              // not configured: setup mode
         copy(hostname, sizeof hostname, CFG_DEFAULT_HOSTNAME);
-        source = CFG_BUILTIN;
+        printf("config: no WiFi settings, hostname %s\n", hostname);
     }
-    printf("config: %s settings, hostname %s\n",
-           source == CFG_STORED ? "stored" : "built-in", hostname);
 }
 
 const char *config_ssid(void)     { return ssid; }
 const char *config_password(void) { return password; }
 const char *config_hostname(void) { return hostname; }
-cfg_source_t config_source(void)  { return source; }
-
-const char *config_source_text(void)
-{
-    switch (source) {
-    case CFG_STORED:        return "stored";
-    case CFG_STORED_FAILED: return "built-in (stored WiFi settings did not connect)";
-    default:                return "built-in (config.json)";
-    }
-}
-
-bool config_builtin_wifi_differs(void)
-{
-    return strcmp(ssid, CFG_DEFAULT_SSID) != 0 || strcmp(password, CFG_DEFAULT_PASSWORD) != 0;
-}
-
-void config_use_builtin_wifi(void)
-{
-    copy(ssid, sizeof ssid, CFG_DEFAULT_SSID);
-    copy(password, sizeof password, CFG_DEFAULT_PASSWORD);
-    source = CFG_STORED_FAILED;
-}
 
 const char *config_check(const char *s, const char *pw, const char *h)
 {

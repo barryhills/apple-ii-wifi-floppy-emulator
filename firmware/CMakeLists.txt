@@ -12,51 +12,6 @@ set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 
 # ---------------------------------------------------------------------------
-# Build-time defaults from config.json (gitignored; copy config.example.json).
-# The Pico uses these unless a valid config is stored in flash (later).
-# ---------------------------------------------------------------------------
-set(A2DRIVE_CONFIG ${CMAKE_CURRENT_SOURCE_DIR}/config.json CACHE FILEPATH "WiFi/hostname defaults (JSON)")
-set(CFG_JSON ${A2DRIVE_CONFIG})
-if(NOT EXISTS ${CFG_JSON})
-    message(FATAL_ERROR
-        "firmware/config.json not found.\n"
-        "Copy config.example.json to config.json and fill in your WiFi details.")
-endif()
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CFG_JSON})
-file(READ ${CFG_JSON} _cfg)
-
-function(cfg_get out key)
-    string(JSON _v ERROR_VARIABLE _e GET "${_cfg}" ${key})
-    if(_e)
-        message(FATAL_ERROR "config.json: missing or bad \"${key}\": ${_e}")
-    endif()
-    set(${out} "${_v}" PARENT_SCOPE)
-endfunction()
-
-cfg_get(CFG_SSID     ssid)
-cfg_get(CFG_PASSWORD password)
-cfg_get(CFG_HOSTNAME hostname)
-
-string(LENGTH "${CFG_SSID}" _n)
-if(_n LESS 1 OR _n GREATER 32)
-    message(FATAL_ERROR "config.json: ssid must be 1-32 characters")
-endif()
-string(LENGTH "${CFG_PASSWORD}" _n)
-if(NOT _n EQUAL 0 AND (_n LESS 8 OR _n GREATER 63))
-    message(FATAL_ERROR "config.json: WPA2 password must be 8-63 characters (empty = open network)")
-endif()
-if(NOT CFG_HOSTNAME MATCHES "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" OR CFG_HOSTNAME MATCHES "^.{64}")
-    message(FATAL_ERROR "config.json: hostname must be 1-63 of a-z, 0-9, '-' (no leading/trailing '-')")
-endif()
-
-# Escape for a C string literal.
-foreach(v CFG_SSID CFG_PASSWORD)
-    string(REPLACE "\\" "\\\\" ${v} "${${v}}")
-    string(REPLACE "\"" "\\\"" ${v} "${${v}}")
-endforeach()
-configure_file(src/config_defaults.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/config_defaults.h @ONLY)
-
-# ---------------------------------------------------------------------------
 # Embed src/web/index.html as a C array (re-run on change).
 # ---------------------------------------------------------------------------
 set(HTML_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/web/index.html)
@@ -92,7 +47,7 @@ add_executable(a2drive
 )
 target_include_directories(a2drive PRIVATE
     src                                        # lwipopts.h
-    ${CMAKE_CURRENT_BINARY_DIR}/generated      # config_defaults.h
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 # -fconserve-stack: keep inlining from merging big frames. Core 0 has a 4 KB
 # stack shared with lwIP's interrupt-time callbacks (see PICO_STACK_SIZE).
@@ -100,7 +55,7 @@ target_compile_options(a2drive PRIVATE -Wall -Wextra -fconserve-stack)
 # Vendored code: build as-is, without our warning set.
 set_source_files_properties(src/third_party/dhcpserver/dhcpserver.c PROPERTIES COMPILE_OPTIONS "-w")
 target_compile_definitions(a2drive PRIVATE
-    A2DRIVE_VERSION="0.13.3-led"
+    A2DRIVE_VERSION="0.14.1-oled"
     PICO_STACK_SIZE=0x1000      # lwIP callbacks run in IRQ context on this stack
     PICO_USE_STACK_GUARDS=1     # M33 MSPLIM: stack overflow faults at once (see diag.c)
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages

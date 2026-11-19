@@ -805,8 +805,9 @@ void drive_oled_line(char *buf, size_t n)
         return;
     }
     static const char *frac[4] = { "", ".25", ".5", ".75" };
-    snprintf(buf, n, "Track %d%s%s%s", s.qtrack / 4, frac[s.qtrack % 4],
-             s.enabled ? "  ON" : "", s.writing ? " W" : s.dirty ? " *" : "");
+    // Track only (Barry, 2026-11-19): selected/writing/unsaved is the
+    // activity LED's job.
+    snprintf(buf, n, "Track %d%s", s.qtrack / 4, frac[s.qtrack % 4]);
 }
 
 bool drive_angle(uint32_t *cell, uint32_t *cells, uint32_t *at_us)

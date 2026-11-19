@@ -35,10 +35,8 @@ static int32_t rssi_cache;
 static bool rssi_valid;
 static char ip_str[16];
 
-// Settings come from config.c (stored in flash, else config.json). If the
-// drive has not joined within FALLBACK_MS (Barry: 1 minute) on the stored
-// settings, it tries the built-in ones for this boot; if those don't join
-// within FALLBACK_MS either (or are the same), it reboots into setup mode.
+// Settings come from config.c (stored in flash). If the drive has not
+// joined within FALLBACK_MS (Barry: 1 minute), it reboots into setup mode.
 // Only before the first successful join: a later link loss just retries.
 // A setup mode entered this way reboots to try again after SETUP_IDLE_MS with
 // nobody on the access point, so a router that was slow to come back after a
@@ -141,16 +139,9 @@ static void give_up(const char *why)
 {
     printf("wifi: %s; retrying in %d s\n", why, RETRY_DELAY_MS / 1000);
     if (!ever_up && absolute_time_diff_us(stage_start, get_absolute_time()) > FALLBACK_MS * 1000ll) {
-        if (config_source() == CFG_STORED && config_builtin_wifi_differs()) {
-            printf("wifi: stored settings have not connected in %d s; using built-in settings\n",
-                   FALLBACK_MS / 1000);
-            config_use_builtin_wifi();
-            stage_start = get_absolute_time();
-        } else {
-            printf("wifi: no network joined; rebooting into setup mode\n");
-            sleep_ms(50);                       // let the console drain
-            diag_reboot_into_setup();
-        }
+        printf("wifi: no network joined in %d s; rebooting into setup mode\n", FALLBACK_MS / 1000);
+        sleep_ms(50);                           // let the console drain
+        diag_reboot_into_setup();
     }
     cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
     ip_str[0] = 0;

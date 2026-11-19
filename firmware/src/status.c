@@ -4,7 +4,6 @@
 #include "pico/unique_id.h"
 
 #include "clock.h"
-#include "config.h"
 #include "diag.h"
 #include "drive.h"
 #include "json.h"
@@ -65,10 +64,10 @@ size_t status_json(char *buf, size_t n)
         "{\"firmware\":\"%s\",\"board_id\":\"%s\",\"hostname\":\"%s\","
         "\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi_dbm\":%s,\"uptime_s\":%llu,"
         "\"time\":%s,\"mounted_row\":%d,\"image\":%s,\"drive\":%s,"
-        "\"last_reset\":\"%s\",\"stack_free\":%lu,\"heap_headroom\":%lu,\"heap_in_use\":%lu,\"settings\":\"%s\",\"setup_mode\":%s}\n",
+        "\"last_reset\":\"%s\",\"stack_free\":%lu,\"heap_headroom\":%lu,\"heap_in_use\":%lu,\"setup_mode\":%s}\n",
         A2DRIVE_VERSION, id, net_hostname(), ssid, net_ip_str(), rssi,
         (unsigned long long)(time_us_64() / 1000000), now, store_mounted() + 1, image, drive,
-        diag_last_reset(), (unsigned long)diag_stack_free(), heap_headroom, (unsigned long)mi.uordblks, config_source_text(),
+        diag_last_reset(), (unsigned long)diag_stack_free(), heap_headroom, (unsigned long)mi.uordblks,
         net_setup_mode() ? "true" : "false");
     if (len < 0)
         len = 0;

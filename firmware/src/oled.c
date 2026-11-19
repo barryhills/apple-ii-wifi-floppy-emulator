@@ -226,18 +226,29 @@ static void set_note(const char *t)
     note_until = make_timeout_time_ms(NOTE_MS);
 }
 
+// An image name as the OLED shows it: without its file type (".dsk",
+// ".woz", ...), to save columns (Barry, 2026-11-19). The web page keeps it.
+static const char *short_name(const char *name, char *buf, size_t n)
+{
+    snprintf(buf, n, "%s", name);
+    char *dot = strrchr(buf, '.');
+    if (dot && dot != buf && strlen(dot) <= 4)
+        *dot = 0;
+    return buf;
+}
+
 static void draw_home(void)
 {
     char s[COLS + 8];
     image_info_t im;
     if (net_setup_mode()) {
-        // Instructions only; a picker message briefly replaces the title.
+        // What to do, in order; a picker message briefly replaces the title.
         put_line(0, time_reached(note_until) ? "WiFi setup mode" : note);
-        snprintf(s, sizeof s, "SSID: %s", net_setup_ssid());
+        snprintf(s, sizeof s, "Join %s", net_setup_ssid());
         put_line(1, s);
-        put_line(2, "Password: none");
-        snprintf(s, sizeof s, "http://%s", net_ip_str());
-        put_line(3, s);
+        snprintf(s, sizeof s, "Open %s", net_ip_str());
+        put_line(2, s);
+        put_line(3, "No password needed");
         return;
     }
     snprintf(s, sizeof s, "%s.local", net_hostname());
@@ -248,9 +259,10 @@ static void draw_home(void)
         snprintf(s, sizeof s, "%s...", net_state_str());
     put_line(1, s);
     if (time_reached(note_until))
-        drive_oled_line(s, sizeof s);           // head position, ON while selected
+        drive_oled_line(s, sizeof s);           // head position (or why nothing is served)
     put_line(2, time_reached(note_until) ? s : note);   // brief messages win
-    put_line(3, store_image(&im) ? im.name : "(drive empty)");
+    char nm[IMAGE_NAME_MAX];
+    put_line(3, store_image(&im) ? short_name(im.name, nm, sizeof nm) : "(drive empty)");
 }
 
 // Header line, then three list lines; the window scrolls to keep the cursor
@@ -270,7 +282,9 @@ static void draw_picker(const int *rows, int n)
         int i = first + line - 1;
         image_info_t im;
         if (i < n && store_row(rows[i], &im)) {
-            snprintf(s, sizeof s, "%c%s", rows[i] == mounted ? '*' : ' ', im.name);
+            char nm[IMAGE_NAME_MAX];
+            snprintf(s, sizeof s, "%c%s", rows[i] == mounted ? '*' : ' ',
+                     short_name(im.name, nm, sizeof nm));
             put_line(line, s);
             if (i == cursor)
                 invert_line(line);

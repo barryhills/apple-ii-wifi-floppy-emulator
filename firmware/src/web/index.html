@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Apple II WiFi Disk</title>
+<title>Apple II WiFi Disk Manager</title>
 <style>
 :root{--bg:#f6f6f3;--fg:#1d1d1f;--mut:#6e6e73;--card:#fff;--line:#e2e2de;--sel:#eef2fb;--acc:#1d1d1f;--ok:#1a7f37;--bad:#c62828}
 @media (prefers-color-scheme:dark){:root{--bg:#161617;--fg:#f2f2f2;--mut:#9a9aa0;--card:#1f1f21;--line:#333336;--sel:#2a2f3a;--acc:#f2f2f2;--ok:#3fb950;--bad:#ff6b6b}}
@@ -21,7 +21,6 @@ section{background:var(--card);border:1px solid var(--line);border-radius:10px;p
 .tog{text-align:center}
 .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #detail{color:var(--mut);font-size:13px;margin:12px 2px 0;min-height:1.4em;overflow-wrap:anywhere}
-.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
 .buttons{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}
 button{font:inherit;font-size:13px;font-weight:600;padding:5px 10px;border-radius:7px;border:1px solid var(--acc);
        background:var(--acc);color:var(--bg);cursor:pointer;white-space:nowrap}
@@ -41,10 +40,10 @@ dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
 </head>
 <body>
 <main>
-<h1>Apple II WiFi Disk</h1>
+<h1>Apple II WiFi Disk Manager</h1>
 
 <section>
-<h2>Carousel</h2>
+<h2>Image Carousel</h2>
 <div id="list" tabindex="0" aria-label="Disk image carousel"></div>
 <div class="buttons">
   <button id="download">Download</button>
@@ -113,8 +112,7 @@ function render() {
   d.replaceChildren();
   if (r)
     d.append(`${r.name} · ${typeLong[r.format] || r.format} · ${when(r.uploaded)} · flash check `,
-             el('span', r.verified ? 'OK' : 'MISMATCH', r.verified ? 'ok' : 'bad'),
-             ' · SHA-256 ', el('span', r.sha256, 'mono'));
+             el('span', r.verified ? 'OK' : 'MISMATCH', r.verified ? 'ok' : 'bad'));
 
   // Every button acts only on the selected row.
   $('download').disabled = busy || !r;
@@ -125,32 +123,22 @@ function render() {
   formChanged();
 }
 
-// Head position (quarter tracks shown as .25/.5/.75), ON while the Apple
-// has the drive selected; why nothing is served, if so.
-function driveText(d) {
-  if (!d) return '—';
-  if (d.error) return 'not serving: ' + d.error;
-  const on = d.enabled ? ' · ON' : '';
-  if (!d.serving) return 'empty, head on track ' + d.track + on;
-  let t = 'Track ' + d.track + (d.on_data ? '' : ' (no data here)') + on;
-  if (d.writing) t += ' · writing';
-  else if (d.dirty_tracks) t += ' · unsaved changes';
-  if (d.save) t += ' · ' + d.save;
-  return t;
-}
-
-async function refresh() {
+// The carousel is polled (the OLED buttons and the Apple's writes change
+// it); device info only on load and after an operation (Barry: no head
+// tracking on the page; the OLED shows it). A Drive row appears only when
+// the mounted image can't be served.
+async function refresh(full) {
   try {
     const l = await (await fetch('/images', {cache: 'no-store'})).json();
     rows = l.rows; mounted = l.mounted;
     render();
+    if (!full) { $('err').textContent = ''; return; }
     const s = await (await fetch('/status', {cache: 'no-store'})).json();
     $('dev').replaceChildren(...[
       ['IP', s.ip || '\u2014'],
-      ['Signal', s.rssi_dbm == null ? '—' : s.rssi_dbm + ' dBm'], ['Firmware', s.firmware],
-      ['Network config', s.settings],
-      ['Drive', driveText(s.drive)],
-      ['Last reset', s.last_reset], ['Stack headroom', s.stack_free + ' bytes'],
+      ['Firmware', s.firmware],
+      ...(s.drive && s.drive.error ? [['Drive', 'not serving: ' + s.drive.error]] : []),
+      ['Stack headroom', s.stack_free + ' bytes'],
       ['Heap headroom', s.heap_headroom + ' bytes'],
     ].flatMap(([k, v]) => [el('dt', k), el('dd', v)]));
     $('err').textContent = '';
@@ -172,22 +160,20 @@ async function op(method, url, okText) {
     const text = await res.text();
     let r = {};
     try { r = JSON.parse(text); } catch {}
-    if (res.ok && r.ok !== false) msg(okText, 'ok');
+    if (res.ok && r.ok !== false) msg(okText, 'ok');     // okText '' = the control shows it; clears an old message
     else msg('Failed: ' + (r.error || text.trim() || 'HTTP ' + res.status), 'bad');
   } catch (e) {
     msg('Failed: ' + e.message, 'bad');
   }
   busy = false;
-  await refresh();
+  await refresh(true);
 }
 
 function mount() {
   const r = rows[sel];
   if (busy || !r) return;
-  if (sel + 1 === mounted)
-    op('POST', '/eject', `Unmounted ${r.name}; the drive is empty.`);
-  else
-    op('POST', `/mount/${sel + 1}`, `Mounted ${r.name}.`);
+  // No success message: the ●/○ change says it (Barry). Failures still show.
+  op('POST', sel + 1 === mounted ? '/eject' : `/mount/${sel + 1}`, '');
 }
 
 $('download').onclick = () => {
@@ -234,7 +220,7 @@ $('file').onchange = () => {
   msg(`Uploading ${f.name}…`);
   x.upload.onprogress = e => { if (e.lengthComputable) $('prog').value = e.loaded / e.total; };
   x.upload.onload = () => msg('Checking and saving…');
-  const done = () => { busy = false; $('prog').hidden = true; refresh(); };
+  const done = () => { busy = false; $('prog').hidden = true; refresh(true); };
   x.onload = () => {
     let r = {};
     try { r = JSON.parse(x.responseText); } catch {}
@@ -367,7 +353,7 @@ $('list').onkeydown = e => {
 };
 
 loadSettings();
-refresh().then(() => { if (mounted) { sel = mounted - 1; render(); } $('list').focus(); });
+refresh(true).then(() => { if (mounted) { sel = mounted - 1; render(); } $('list').focus(); });
 setInterval(() => { if (!busy) refresh(); }, 3000);
 </script>
 </body>

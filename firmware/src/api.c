@@ -561,8 +561,8 @@ static void get_settings(conn_t *c)
     json_escape(h, sizeof h, config_hostname());
     json_escape(sd, sizeof sd, config_ssid());
     int n = snprintf(body, sizeof body,
-        "{\"hostname\":\"%s\",\"ssid\":\"%s\",\"password_set\":%s,\"source\":\"%s\"}\n",
-        h, sd, config_password()[0] ? "true" : "false", config_source_text());
+        "{\"hostname\":\"%s\",\"ssid\":\"%s\",\"password_set\":%s}\n",
+        h, sd, config_password()[0] ? "true" : "false");
     http_respond(c, 200, "application/json", body, (size_t)n, true, NULL);
 }
 

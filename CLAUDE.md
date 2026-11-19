@@ -122,13 +122,13 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   (`src/third_party/dhcpserver/`, MIT, unmodified); same web page, which
   shows a setup note and focuses the WiFi field. Entered at boot only:
   UP+DOWN held at power-on (read ~2 s in, after the USB console wait), no
-  SSID configured, or the fallback: stored settings 1 min (Barry) -> built-in
-  settings 1 min (if different) -> reboot into setup (request carried in
-  watchdog scratch 0). Only before the first join; later link loss retries.
+  SSID configured, or the fallback: stored settings 1 min (Barry) -> reboot
+  into setup (request carried in watchdog scratch 0; until v0.14 a
+  built-in config.json network was tried for a minute first). Only before the first join; later link loss retries.
   Nothing is erased: a plain restart returns to normal. A fallback-entered
   setup mode reboots to retry after 5 min with no client on the AP (router
-  slow after a power cut); button-entered never times out. OLED: "WiFi setup
-  mode / SSID: a2drive-setup / Password: none / http://192.168.4.1". No DNS
+  slow after a power cut); button-entered never times out. OLED (since v0.14.1): "WiFi setup
+  mode / Join a2drive-setup / Open 192.168.4.1 / No password needed". No DNS
   server (type the IP). macOS lists the SSID under "Other Networks", and
   can take a few seconds to show it.
   v0.10.1 (Barry passed 2026-11-14): keys held at boot are ignored until
@@ -226,7 +226,8 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   `/status` drive object adds `pins` (raw levels of every connector signal
   at the Pico: bring-up aid), writable, writing, writes, write_cell_ns,
   dirty_tracks, saves, save_failures, lost_sectors, gap_resyncs, save.
-  OLED: "Track 17  ON W" while writing, "*" while unsaved.
+  OLED: (until v0.14.1) "Track 17  ON W" while writing, "*" while unsaved;
+  now the activity LED does that and line 3 is the track only.
 - **Write-protect removed 2026-11-19 (v0.13.1-nowp, Barry: "all images
   read/write"; saves ~1.3 KB flash).** Gone: lock column on the page,
   `POST /protect/N`, `protected` in `/images`, `store_set_writable`,
@@ -285,14 +286,38 @@ Dev loop the project exists for: build on the Mac → `curl` push image →
   row showed LED=1 while dirty, LED=0 on the pass after the save.
   This is also the answer to concern #1 (power-off in the save window).
   Barry fitted the bodge and tested it 2026-11-19: working.
+- **No WiFi credentials in firmware (v0.14-nocreds, 2026-11-19, Barry:
+  simplicity; careful with passwords before publishing):** config.json,
+  config.example.json and config_defaults.h.in removed; the build needs no
+  config. Nothing stored -> empty SSID -> setup mode; default hostname
+  `a2drive` (CFG_DEFAULT_HOSTNAME in config.h). Fallback: stored settings
+  don't join in 1 min -> setup mode. Page: "Network config" row removed
+  (with Signal and Last reset, still in /status except `settings`);
+  /settings drops `source`. Virgin flow: OLED shows setup screen -> join
+  `a2drive-setup` -> open 192.168.4.1 -> enter WiFi + hostname -> Save ->
+  drive restarts on the home network. Checked: UF2 does not contain the
+  password; Barry's board kept its stored settings across the flash.
+  The empty-SSID path itself has not run on hardware yet (before v0.14
+  config.json always supplied an SSID). Barry's old firmware/config.json
+  (gitignored, holds the password) is no longer used.
+- **GUI + OLED trim (v0.14.1-oled, 2026-11-19, Barry passed):** Page:
+  title/h1 "Apple II WiFi Disk Manager"; sections IMAGE CAROUSEL and
+  DEVICE; detail line drops the SHA-256 (still in /images, still checked
+  at boot: "flash check OK"); no success message on mount/eject (the
+  ●/○ says it; failures still show); Device list drops Signal, Last reset,
+  Network config and the Drive/track row (a Drive row appears only when
+  the image can't be served); `/images` polled every 3 s, `/status` only
+  on load and after an operation. OLED: line 3 "Track N" only (no ON/W/*;
+  the activity LED covers it); image names without file type on the home
+  screen and picker (web page keeps it); setup screen rewritten as steps.
 - **Several boards (Barry has 6 //e's):** every board boots as
-  `a2drive.local` (config.json) and our mDNS has no name-conflict handling;
+  `a2drive.local` (since v0.14 via setup mode, where the hostname is set) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default
   name (board-ID suffix) was offered and declined (Barry, 2026-11-19).
 - **Hang diagnostics (v0.6.1+, permanent):** HardFault handler records PC/LR/CFSR
   in watchdog scratch 0-3 and reboots; 4 s watchdog; MSPLIM stack guard
-  (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Last
-  reset" and "Stack headroom" (lowest seen ~1.9 KB of 4 KB under stress).
+  (`PICO_USE_STACK_GUARDS`); stack high-water in /status. Page shows "Stack
+  headroom" ("Last reset" moved to /status only in v0.14.1) (lowest seen ~1.9 KB of 4 KB under stress).
   Directory copies (1.1 KB) moved off the shared stack: likely cause of the
   two freezes (stack overflow during uploads), not proven.
 - **Unexplained hang (2026-11-13):** v0.2-m2 froze while idle (no USB serial,
@@ -473,7 +498,7 @@ order (only a host-test scenario depends on it).
 `/status` has a `drive` object: serving, enabled, track (e.g. 17.25),
 quarter_track, on_data, steps, selects, load_ms, loop_max_us, rddata_idle,
 error; plus heap_headroom/heap_in_use. The OLED's third line shows the head
-("Track 17  ON" while selected).
+("Track 17"); the web page does not (v0.14.1).
 
 **GUI vocabulary (decided 2026-11-13, revised 2026-11-14):** the collection
 of images is the **carousel**. The image the drive serves is the **mounted**
@@ -545,12 +570,12 @@ into the decoder.
 - **Network setup (agreed 2026-11-13; Settings/Restart BUILT in v0.7; setup-mode AP BUILT in v0.10, see Status):**
   Device window: info list, then always-visible fields (hostname, WiFi network,
   write-only password), then buttons Save (stores + restarts) · Restart · Cancel.
-  If stored WiFi settings don't connect within 60 s (was 120 s until v0.10)
-  the drive falls back to the built-in (config.json) network for that boot.
+  If stored WiFi settings don't connect within 60 s the drive reboots into
+  setup mode (v0.14; earlier it first tried a built-in config.json network).
   Device window gets **Settings**
   (hostname, SSID, write-only password; Save & restart) and **Restart**
   (greyed during flash work). Settings stored in the reserved flash sector;
-  `config.json` is the build-time fallback. **Setup mode:** the Pico becomes
+  nothing else (no build-time WiFi since v0.14). **Setup mode:** the Pico becomes
   its own access point "a2drive-setup" at a fixed address (e.g. 192.168.4.1)
   and serves the same page opened on Settings. Entered automatically (no
   stored settings, or can't join for ~2 min) or by holding UP+DOWN at
