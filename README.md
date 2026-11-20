@@ -1,4 +1,4 @@
-# WiFi Disk II drive emulator
+# Apple II WiFi Floppy Emulator
 
 A Raspberry Pi Pico 2 W board that plugs into an Apple Disk II controller
 card's drive connector and acts as a 5.25" drive (drive 1 or 2). Disk images
@@ -17,3 +17,5 @@ floppies.
 - **Firmware:** C, Raspberry Pi Pico SDK (`firmware/`). Build:
   `cmake -S firmware -B firmware/build -G Ninja && ninja -C firmware/build`.
 - **Design record:** `CLAUDE.md`: decisions, sources, test history.
+- **Licence:** MIT (`LICENSE`); borrowed code and its licences:
+  `THIRD-PARTY-NOTICES.md`.

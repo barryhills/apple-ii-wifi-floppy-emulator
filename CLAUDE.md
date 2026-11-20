@@ -434,8 +434,10 @@ DRC and a pin-by-pin cross-check against the schematic (84 pins, 0 mismatches).
 ### J1 — Disk II 20-pin connector (verified)
 
 Verified against Apple drawing 050-0007-01, Disk II analog board
-(`docs/reference/disk-ii-analog-board-schematic.pdf`), and the //c external
-drive table (`docs/reference/iic-db19-to-20pin-table.jpg`).
+schematic, and an Apple //c external-drive table (DB-19 to 20-pin). These
+scans are not in the public repository (copyright is Apple's); both
+circulate in Apple II documentation archives. Barry keeps local copies in
+`docs/reference/` (gitignored).
 
 | Pin | Signal | Pin | Signal |
 |---|---|---|---|

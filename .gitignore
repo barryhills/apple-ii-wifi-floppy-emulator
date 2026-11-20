@@ -6,3 +6,4 @@ build-bench/
 hardware/source/pcb/out*/
 __pycache__/
 firmware/config.json
+docs/reference/
