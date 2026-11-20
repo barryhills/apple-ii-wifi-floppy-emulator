@@ -373,6 +373,21 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
   UP+DOWN at power-on (RESTART button). Wrong password: OLED keeps saying
   "connecting..."; the after-save alert on the page now says to use
   UP+DOWN + RESTART. Flashed: joins normally.
+- **Two OLED kinds, one code (v0.15.4, 2026-11-20, Barry tested both):**
+  the 0.96" SSD1306 and a 1.54" module with a CH1116 (SH1106-class,
+  132x64 RAM, 128x64 panel; needs a rev C footprint, later). The CH1116
+  has no horizontal addressing, so oled.c now sends the frame a page at a
+  time (0xB0+page, column 2, the 126 text columns) and clears the whole
+  RAM once at init; no 0x20 memory-mode command. Same init otherwise
+  (0x8D 0x14 charge pump works on the CH1116 module). On the SSD1306 the
+  text sits 2 px further right; the inverse bar is 126 px. Cost: +260 B
+  RAM, ~+1.2 ms per redraw (~24.7 ms), ~26 ms once at boot; core 1
+  untouched. Lesson: the first "same problem" report was the old
+  firmware: the test build had not been flashed onto that Pico; verify
+  the running version (console or /status) before judging a test.
+  Reference: Zephyr display_ssd1306.c treats CH1116 like CH1115/SH1106
+  (0xAD 0x8B DC-DC, VCOM 0x35, 0x00 command framing); not needed here.
+  CH1116 datasheet (baud-dance.com) could not be fetched.
 - **Several boards (Barry has 6 //e's):** every board boots as
   `a2drive.local` (since v0.14 via setup mode, where the hostname is set) and our mDNS has no name-conflict handling;
   bring each new board up alone and rename it in Settings. A unique default

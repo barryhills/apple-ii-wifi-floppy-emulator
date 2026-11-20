@@ -15,7 +15,7 @@ pico_sdk_init()
 # ships: no bench self-tests. ON = adds /test/*, /image.woz and their ~81 KB
 # of RAM (capture buffers); version string gets "-bench".
 option(A2DRIVE_BENCH "Include the bench self-tests (debug binary)" OFF)
-set(A2DRIVE_VERSION_BASE "0.15.3")
+set(A2DRIVE_VERSION_BASE "0.15.4")
 if(A2DRIVE_BENCH)
     set(A2DRIVE_VERSION_STR "${A2DRIVE_VERSION_BASE}-bench")
 else()

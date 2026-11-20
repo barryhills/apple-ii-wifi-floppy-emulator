@@ -1,10 +1,25 @@
-// SSD1306 128x64 OLED on I2C0 (GP12 SDA, GP13 SCL; schematic r0.3).
+// 128x64 OLED on I2C0 (GP12 SDA, GP13 SCL; schematic r0.3): SSD1306
+// (0.96" module) or an SH1106-class 132x64 controller such as the CH1116
+// on Barry's 1.54" module (v0.15.4, 2026-11-20: Barry tested both).
 //
 // Init sequence and I2C framing (control byte 0x80 = one command, 0x40 =
-// data stream follows; horizontal addressing so the whole 1 KB frame goes in
-// one write) follow Raspberry Pi's pico-examples i2c/ssd1306_i2c
+// data stream follows) follow Raspberry Pi's pico-examples i2c/ssd1306_i2c
 // (BSD-3-Clause), with the 128x64 values it selects (MUX 63, COM pins 0x12).
 // Not yet checked against the SSD1306 datasheet itself.
+//
+// Both kinds: the frame is sent one page (8-pixel row) at a time in page
+// addressing mode (0xB0+page, then the column), which every one of these
+// chips has; SH1106-class chips have no horizontal mode or 0x21/0x22
+// window (SH1106 datasheet; third-party notes; CH1116 datasheet not yet
+// read for its command table). Pages start at column OLED_COL0 = 2: the
+// 128 visible columns of a 132-column SH1106-class RAM usually start
+// there; on an SSD1306 it just moves everything 2 pixels right. Only the
+// SEND_COLS = 126 columns the text uses are sent (21 x 6), so nothing runs
+// past column 127 on an SSD1306 (in page mode it would wrap back to the
+// start column of that page). The whole RAM is cleared once at init, so
+// columns the frame never covers (0-1 on an SSD1306, the 132-column edges
+// on SH1106-class chips) stay dark. Cost: an inverse-video bar is 126
+// pixels wide, not 128.
 //
 // Text: 4 lines of 21 characters, 5x7 glyphs drawn double height (5x14) +
 // 1 column gap: Barry found single height too small on the 0.96" panel. The screen is
@@ -41,6 +56,8 @@
 #define H 64
 #define COLS (W / 6)            // 21
 #define LINES (H / 8)           // 8
+#define OLED_COL0 2             // first visible column (see top)
+#define SEND_COLS (W - OLED_COL0) // 126 = 21 characters x 6
 
 static uint8_t frame[1 + W * H / 8];       // [0] = 0x40 data control byte
 static uint8_t sent[W * H / 8];
@@ -107,7 +124,8 @@ void oled_init(void)
 
     static const uint8_t init[] = {
         0xAE,           // display off
-        0x20, 0x00,     // memory mode: horizontal
+        // (no 0x20 memory mode: SSD1306 resets to page addressing, which
+        //  is what we use; SH1106-class chips have only that)
         0x40,           // start line 0
         0xA1,           // segment remap: column 127 -> SEG0
         0xA8, H - 1,    // multiplex ratio
@@ -125,6 +143,15 @@ void oled_init(void)
         0xAF,           // display on
     };
     present = cmds(init, sizeof init);
+    // Clear all of the RAM (up to 132 columns, from column 0) once.
+    static uint8_t zeros[1 + 132];
+    zeros[0] = 0x40;
+    for (int p = 0; p < LINES && present; p++) {
+        const uint8_t at[] = {(uint8_t)(0xB0 | p), 0x00, 0x10};
+        present = cmds(at, sizeof at) &&
+                  i2c_write_timeout_us(OLED_I2C, OLED_ADDR, zeros, sizeof zeros, false, 20000)
+                      == (int)sizeof zeros;
+    }
     printf("oled: %s\n", present ? "found at 0x3C" : "not found");
     frame[0] = 0x40;
     next_draw = get_absolute_time();
@@ -363,10 +390,18 @@ void oled_poll(void)
 
     if (have_sent && memcmp(sent, frame + 1, sizeof sent) == 0)
         return;
-    static const uint8_t window[] = {0x21, 0, W - 1, 0x22, 0, LINES - 1};
-    if (cmds(window, sizeof window) &&
-        i2c_write_timeout_us(OLED_I2C, OLED_ADDR, frame, sizeof frame, false, 100000)
-            == (int)sizeof frame) {
+    // One page at a time (see top): select page and column, then the text columns.
+    static uint8_t row[1 + SEND_COLS];
+    row[0] = 0x40;
+    bool ok = true;
+    for (int p = 0; p < LINES && ok; p++) {
+        const uint8_t at[] = {(uint8_t)(0xB0 | p), (uint8_t)(0x00 | (OLED_COL0 & 0x0F)),
+                              (uint8_t)(0x10 | (OLED_COL0 >> 4))};
+        memcpy(row + 1, frame + 1 + p * W, SEND_COLS);
+        ok = cmds(at, sizeof at) &&
+             i2c_write_timeout_us(OLED_I2C, OLED_ADDR, row, sizeof row, false, 20000) == (int)sizeof row;
+    }
+    if (ok) {
         memcpy(sent, frame + 1, sizeof sent);
         have_sent = true;
     }
