@@ -7,3 +7,4 @@ hardware/source/pcb/out*/
 __pycache__/
 firmware/config.json
 docs/reference/
+hardware/rev-c/out/
