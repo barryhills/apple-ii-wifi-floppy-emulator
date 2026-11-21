@@ -45,6 +45,13 @@ deleted after merging. Their commits remain in `main`; tags v0.5-list,
 v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
 
 
+- **Board rev C ordered** from JLCPCB (2026-11-20; Barry). Everything is in
+  `hardware/rev-c/` (see its NOTES.md): agreed placement, schematic rev 0.4
+  (only change: R5 from Pico pin 21 / GP16, 180 ohm), generator/router/DRC,
+  Gerber writer, order zip in `hardware/rev-c/fab/`. 1.54in OLED (CH1116) on
+  J3, header measured by Barry on the 1:1 print; display lowered 3.41 mm.
+  Router keeps tracks off other nets' pads for hand soldering. Rev B files
+  in `hardware/source/` and `hardware/fab/` are unchanged.
 - **Board rev B ordered** from JLCPCB (5 bare boards, 2-layer, 1.6 mm, invoice
   2026-11-14, ~$40 all in). In the mail as of 2026-11-15. Barry is
   breadboarding U1/U2 meanwhile.
