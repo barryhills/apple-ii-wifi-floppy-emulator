@@ -43,12 +43,20 @@ pico = {3:"GND",4:"PH0_3V",5:"PH1_3V",6:"PH2_3V",7:"PH3_3V",8:"GND",9:"ENABLE_3V
         19:"UP*",20:"DOWN*",21:"LED_ACT",23:"GND",28:"GND",30:"RESTART*",33:"GND",36:"+3V3",38:"GND",39:"VSYS"}
 for p in range(1, 21):  pad("U3", p, U3X, U3Y + 2*(p-1), pico.get(p), 1.0, 1.7)
 for p in range(21, 41): pad("U3", p, U3X + 14, U3Y + 38 - 2*(p-21), pico.get(p), 1.0, 1.7)
-# OLED 1.54in (44.45 x 38.1): lower-left corner tangent to the bottom-left hole.
-# Header ASSUMED centred, pin centres 2.0 mm below the module's top edge.
+# OLED 1.54in (44.45 x 38.1 outline): lower-left corner tangent to the
+# bottom-left mounting hole. J3: Barry fit-checked the module on the 1:1 print
+# (2026-11-20): its header sits 2.2 mm left of where a centred header would be;
+# with that, the module's left edge lines up with the silkscreen outline. Pin
+# centres 2.0 mm below the outline's top edge (confirmed). Pins snapped to the
+# routing grid in x (x 17..23, a 0.035 mm shift); y stays off grid (stubs).
 HOLES = [(3*G, 3*G), (75*G, 3*G), (3*G, 51*G), (75*G, 51*G)]; HOLE_D = 3.2
-OLED = (HOLES[2][0] + HOLE_D/2, HOLES[2][1] - HOLE_D/2 - 38.1, HOLES[2][0] + HOLE_D/2 + 44.45, HOLES[2][1] - HOLE_D/2)
-JX = (OLED[0] + OLED[2]) / 2; JY = OLED[1] + 2.0
-for i, n in enumerate(["GND", "+3V3", "SCL", "SDA"]): pad("J3", i+1, 0, 0, n, 1.0, 1.7, mm=(JX + (i - 1.5) * 2.54, JY))
+# Lowered (Barry, 2026-11-20: up to 4 mm is fine; the module's removable tabs
+# may cover a sliver of the mounting hole) by 3.41 mm, so J3 sits on the grid
+# (x 17..23, y 24) and clears U1's bottom row by 3 grid steps.
+J3Y = 24
+JY = J3Y * G
+OLED = (HOLES[2][0] + HOLE_D/2, JY - 2.0, HOLES[2][0] + HOLE_D/2 + 44.45, JY - 2.0 + 38.1)
+for i, n in enumerate(["GND", "+3V3", "SCL", "SDA"]): pad("J3", i+1, 17 + 2*i, J3Y, n, 1.0, 1.7)
 
 def two(ref, a, b, na, nb, drill=0.8, dia=1.6):
     pad(ref, 1, a[0], a[1], na, drill, dia); pad(ref, 2, b[0], b[1], nb, drill, dia)

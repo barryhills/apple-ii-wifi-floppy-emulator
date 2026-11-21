@@ -15,11 +15,12 @@ BW, BH = 78 * G, 54 * G                 # 99.06 x 68.58 mm, same as rev B
 HOLES = [(3*G, 3*G), (75*G, 3*G), (3*G, 51*G), (75*G, 51*G)]; HOLE_D = 3.2
 CLR = 0.2                                # pad-to-pad clearance target (rev B DRC)
 
-# (6) OLED 1.54in module: 44.45 W x 38.1 H (Barry). Lower-left corner
+# (6) OLED 1.54in module outline: 44.45 W x 38.1 H. Lower-left corner
 # tangent to the bottom-left mounting hole: left edge = hole x + r, bottom
 # edge = hole y - r.
+# Lowered 3.41 mm (Barry: up to 4 mm OK) so J3 sits on the grid at y 24.
 _hx, _hy = HOLES[2]
-OLED = (_hx + HOLE_D/2, _hy - HOLE_D/2 - 38.1, _hx + HOLE_D/2 + 44.45, _hy - HOLE_D/2)
+OLED = (_hx + HOLE_D/2, 24*G - 2.0, _hx + HOLE_D/2 + 44.45, 24*G - 2.0 + 38.1)
 
 pads = []        # (ref, pin, x, y, dia, square)
 outlines = []    # (ref, kind, data, label)   kind: rect (x0,y0,x1,y1) | circle (cx,cy,r)
@@ -101,11 +102,8 @@ for p in range(1, 21):  pad("U3", p, 58, 4 + 2*(p-1))
 for p in range(21, 41): pad("U3", p, 72, 4 + 38 - 2*(p-21))
 rect("U3", 65*G - 10.5, 4*G - 1.37, 65*G + 10.5, 4*G - 1.37 + 51.0, "U3 PICO 2 W")
 
-# (6) J3 for the OLED (OLED placed at the top of this file). ASSUMED (to measure): 4-pin header centred left-right,
-# pin centres 2.0 mm below the module's top edge. J3 is therefore off the
-# 1.27 grid (short stubs, as for other off-grid pads).
-jx = (OLED[0] + OLED[2]) / 2; jy = OLED[1] + 2.0
-for i in range(4): pads.append(("J3", i + 1, jx + (i - 1.5) * 2.54, jy, 1.7, False))
+# (6) J3: header 2.2 mm left of centred (Barry, fit check), x snapped to the grid.
+for i in range(4): pad("J3", i + 1, 17 + 2*i, 24)
 rect("J3", *OLED, "J3 OLED 1.54in (keepout)"); moved.add("J3")
 
 # (7) buttons: UP/DOWN left edge 0.15in (3.81 mm) right of the OLED, cluster 0.3in lower
