@@ -60,7 +60,8 @@ R5 top to Pico pin 21 (LED_ACT); R5 180; D2 note "activity"; J3 label covers the
 
 ## Open
 
-- Final 1:1 fit check of the printed `out/fit-check-revC-1to1.pdf` with the
-  real parts; then copy the Gerber zip to `hardware/rev-c/fab/` as the order.
+- (Done 2026-11-20: Barry's 1:1 fit check passed. Order files in `fab/`:
+  `apple2-wifi-floppy-revC-gerbers.zip`, sha256 93705eb73d22b168..., identical
+  to a fresh build from the committed source; plus the fit-check PDF.)
 - Gerbers in a third-party viewer (new square-pad code), or JLCPCB's preview.
 - A low pan-head or nylon screw at the bottom-left hole (under the OLED corner).
