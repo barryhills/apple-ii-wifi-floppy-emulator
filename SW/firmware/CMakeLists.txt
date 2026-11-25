@@ -73,7 +73,7 @@ target_compile_definitions(a2drive PRIVATE
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=2000   # dev aid: catch boot messages
     # Core 1 runs the drive from RAM and never reads flash (drive.c), so flash
     # writes need not stop it: flash_safe_execute only masks core 0's IRQs.
-    # tools/check_core1_ram.py checks the ELF for core-1 code in flash.
+    # SW/tools/check_core1_ram.py checks the ELF for core-1 code in flash.
     PICO_FLASH_ASSUME_CORE1_SAFE=1
 )
 target_link_libraries(a2drive

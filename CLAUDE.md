@@ -1,7 +1,9 @@
 # WiFi Disk II drive emulator — project memory
 
-Read this first in every session. Keep it current: when a decision is made or an
-open item closes, edit this file in the same session.
+Design record for the code and boards in this repository. Keep it current: when
+a decision is made or an open item closes, edit this file in the same session.
+Working agreements and the PROD/DEV folder layout are in the `CLAUDE.md` one
+level above the repo (`~/Claude/wifi-disk-ii/CLAUDE.md`, not in git).
 
 ## What this is
 
@@ -20,23 +22,6 @@ in the design assumes either booting from the vdisk or not booting from it.
 Dev loop the project exists for: build on the Mac → `curl` push image →
 `BRUN PROG` from the vdisk (D1 or D2) on the //e. No reboot.
 
-## Working agreements (how Barry wants to work)
-
-- **Staged milestones, each ending in a test Barry runs.** Barry sets the stages
-  and tests; Claude owns internals within a stage. Do off-target testing (Mac,
-  bare Pico) wherever possible before needing the //e.
-- **Verify against sources, not recall.** Primary sources preferred (Apple
-  drawings, *Beneath Apple DOS*, *Understanding the Apple II*, RP2350
-  datasheet, Pico SDK docs, WOZ spec, working source code). Since 2026-11-13
-  Barry also allows secondary sources (articles, forum posts, emulator source,
-  scans). Cite the source in code comments, and flag anything unverified or
-  resting on a single secondary source. Never rely on recall for format or
-  timing details.
-- **New code is the prime suspect.** The //e, DOS 3.3 and the controller are 40
-  years proven. When something fails, test our code's own logic first.
-- Straight talk, no padding. Barry is a retired OS-kernel engineer; he reads C.
-- Ask before git commits/pushes; branch before committing to main.
-
 ## Status (as of 2026-11-19)
 
 All work through v0.15 is on `main` (fast-forwarded 2026-11-19); the
@@ -46,12 +31,12 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
 
 
 - **Board rev C ordered** from JLCPCB (2026-11-20; Barry). Everything is in
-  `hardware/rev-c/` (see its NOTES.md): agreed placement, schematic rev 0.4
+  `HW/REVC/` (see its NOTES.md): agreed placement, schematic rev 0.4
   (only change: R5 from Pico pin 21 / GP16, 180 ohm), generator/router/DRC,
-  Gerber writer, order zip in `hardware/rev-c/fab/`. 1.54in OLED (CH1116) on
+  Gerber writer, order zip in `HW/REVC/fab/`. 1.54in OLED (CH1116) on
   J3, header measured by Barry on the 1:1 print; display lowered 3.41 mm.
   Router keeps tracks off other nets' pads for hand soldering. Rev B files
-  in `hardware/source/` and `hardware/fab/` are unchanged.
+  in `HW/REVB/` are unchanged.
 - **Board rev B ordered** from JLCPCB (5 bare boards, 2-layer, 1.6 mm, invoice
   2026-11-14, ~$40 all in). In the mail as of 2026-11-15. Barry is
   breadboarding U1/U2 meanwhile.
@@ -61,9 +46,9 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
   20-pin female/female ribbon cables, 74LS125, all passives, ELEGOO 0.96" SSD1306
   I2C OLED (pin order GND VCC SCL SDA), logic analyzer.
 - **Not yet done:** 1:1 paper fit check of the real parts against
-  `docs/fit-check-revB-1to1.pdf`; Gerber check in a third-party viewer was done
+  `HW/REVB/fit-check-revB-1to1.pdf`; Gerber check in a third-party viewer was done
   only via JLCPCB's upload preview.
-- **Firmware:** milestone 0 **passed** 2026-11-13 (`firmware/blink/`). Full-flash
+- **Firmware:** milestone 0 **passed** 2026-11-13 (`SW/firmware/blink/`). Full-flash
   pattern test deliberately skipped.
 - **Milestone 1 passed** 2026-11-13 (Barry: works after reboot). Committed
   `8f45046` on branch `m1-wifi-http` (local only, no remote).
@@ -77,9 +62,9 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
 - **Milestone 3 passed** 2026-11-13 (Barry: BOOT!!.woz from the Pico works in
   Virtual ][). Branch `m3-gcr-encoder`. Details:
   `GET /image.woz` streams a WOZ 2 (INFO v2) built by `src/gcr.c`/`src/woz.c`;
-  `tools/woz_check.py` (independent latch-model decoder) decodes all 560
+  `SW/tools/woz_check.py` (independent latch-model decoder) decodes all 560
   sectors identical to the .dsk; Pico output bit-identical to the host build
-  (`tools/host/mkwoz.c`). 50,144 bits/track, gaps 16/6/16. The WOZ download
+  (`SW/tools/host/mkwoz.c`). 50,144 bits/track, gaps 16/6/16. The WOZ download
   was a test harness for the encoder, not a product feature.
 - **Direction confirmed 2026-11-13:** the drive stores .dsk and .woz natively
   and serves either; no conversion tool for the user. Both feed one per-track
@@ -191,13 +176,13 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
   DSK: track t at quarter tracks 4t-1..4t+1, half-track positions silent;
   address-field volume = the VTOC's ($06) if the VTOC looks valid, else 254.
   Claude's tests (no wiring: a PIO samples GP10 itself; phases/ENABLE* driven
-  by GPIO *input override*): stepper host test (`tools/host/stepper_test.c`:
+  by GPIO *input override*): stepper host test (`SW/tools/host/stepper_test.c`:
   exhaustive vs float model, DOS seeks with/without overlap, recalibrate from
   every position, timing); stream test bit-exact incl. mid-revolution starts
   and odd lengths; seek test DSK + WOZ (Boot!!.woz, Virtual ][ 51,200-bit
   tracks), whole/half/quarter tracks, angle exact to the cell; flash writes
   during a capture leave core 1's longest loop pass at 2 us and the stream
-  bit-exact; `tools/check_core1_ram.py` proves core-1 code is all in RAM.
+  bit-exact; `SW/tools/check_core1_ram.py` proves core-1 code is all in RAM.
   RAM: static 487 KB of 512; heap headroom 16 KB idle, 8 KB after 26
   concurrent HTTP requests; core-0 stack low-water ~1.5 KB under load (was
   880 B before `-fconserve-stack` and a streaming 6-and-2 encoder). Boot to
@@ -226,9 +211,9 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
   and a new CRC. Row keeps its name; "uploaded" becomes the save time.
   Idle time pre-erases the next free image space (one 4 KB sector per
   250 ms; writes skip erased sectors): a save then takes ~0.4 s, ~1.5-2.6 s
-  if not yet erased. Tests (Claude): host `tools/host/gcrdec_test.c`
+  if not yet erased. Tests (Claude): host `SW/tools/host/gcrdec_test.c`
   (encode/decode all tracks, rotated, damaged, DOS-style rewrite),
-  `tools/host/wrdec_test.c` (cells 3.85-4.05 us, +-0.5 us edge jitter: 0
+  `SW/tools/host/wrdec_test.c` (cells 3.85-4.05 us, +-0.5 us edge jitter: 0
   errors); device `/test/write` on .dsk and WOZ, cells 3.85-4.05 us, first
   and last sectors, adjacent/repeat writes: RAM track and stored image
   (whole-image CRC) correct, other sectors untouched. RAM: heap 19.7 KB
@@ -316,7 +301,7 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
   reset. Barry reloads images from his own golden copies (no restore).
   Follow-up: user-facing text said "your Mac"; now "this computer or
   phone", plus "or the IP address on the drive's display" (phones may not
-  resolve .local). firmware/config.json deleted. Setup at 192.168.4.1
+  resolve .local). SW/firmware/config.json deleted. Setup at 192.168.4.1
   failed in Vivaldi and Edge (both Chromium), worked in Safari: likely
   Chromium trying https first for a bare IP and/or macOS 15 Local Network
   permission for third-party browsers. OLED setup line 3 is now
@@ -434,8 +419,8 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
 
 ## Hardware summary (schematic rev 0.3, board rev B)
 
-Source of truth: `docs/wifi-disk-ii-schematic-r0.3.svg`. The board was generated
-by the custom Python in `hardware/source/` (KiCad was unavailable), with its own
+Source of truth: `HW/REVB/wifi-disk-ii-schematic-r0.3.svg`. The board was generated
+by the custom Python in `HW/REVB/source/` (KiCad was unavailable), with its own
 DRC and a pin-by-pin cross-check against the schematic (84 pins, 0 mismatches).
 
 ### J1 — Disk II 20-pin connector (verified)
@@ -444,7 +429,7 @@ Verified against Apple drawing 050-0007-01, Disk II analog board
 schematic, and an Apple //c external-drive table (DB-19 to 20-pin). These
 scans are not in the public repository (copyright is Apple's); both
 circulate in Apple II documentation archives. Barry keeps local copies in
-`docs/reference/` (gitignored).
+`DOCS/reference/` (gitignored).
 
 | Pin | Signal | Pin | Signal |
 |---|---|---|---|
@@ -610,7 +595,7 @@ use `flash_safe_execute`, one 4 KB sector at a time. **Core 1 is never
 locked out** (`PICO_FLASH_ASSUME_CORE1_SAFE=1`): flash writes only mask core
 0's interrupts, so core 1 must run entirely from RAM and read no flash (no
 `static const` tables, no out-of-line SDK calls). Run
-`tools/check_core1_ram.py` after changing core-1 code.
+`SW/tools/check_core1_ram.py` after changing core-1 code.
 
 ### Firmware notes
 
@@ -714,12 +699,3 @@ into the decoder.
 | BMOW Floppy Emu | ATmega1284 + XC9572XL CPLD, SD card | closed | none available |
 | FujiNet | network-as-disk via TNFS server | GPL-3.0 | Barry dislikes: needs a server, WiFi drops = disk errors. Our design keeps the disk local. Its `lib/bus/iwm/iwm_ll.cpp` has an ESP32 Disk II path (read for method only). |
 | SDISK II firmware (Nishida), copies at ironsteel/sdisk2-firmware, rbanffy/sdisk2 | ATmega328, the original micro-based Disk II emulator | GPL-3.0 | Read for method only: RDDATA idle low + ~1 µs high pulse; WRPROT high = protected; quarter-track stepper table; phases ignored while ENABLE* high |
-
-## Repository layout
-
-- `docs/` — schematic, board renders, 1:1 fit-check PDF, `reference/` scans
-- `hardware/source/` — Python generators (schematic, board, DRC, Gerbers);
-  see its README for how to run
-- `hardware/fab/` — the exact Gerber zip ordered from JLCPCB (rev B)
-- `firmware/` — Pico SDK project (to be created at milestone 0)
-- `tools/` — Mac-side scripts (push/pull, image checks)

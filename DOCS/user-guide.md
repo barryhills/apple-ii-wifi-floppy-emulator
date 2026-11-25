@@ -21,7 +21,7 @@ doesn't care. Booting needs drive 1.
 ## 2. Load the firmware (once per Pico, and for updates)
 
 You need `a2drive.uf2` (from the Releases page, or build it: see
-`firmware/`).
+`SW/firmware/`).
 
 1. Put the Pico into flash mode. Either:
    - unplugged Pico: hold the **BOOTSEL** button on the Pico while plugging

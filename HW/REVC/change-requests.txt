@@ -1,0 +1,24 @@
+wifi drive Rev C
+
+with the experience from Rev B and the desire to introduce a larger OLED display the overall goal of these changes is to relax congestion.  Here are my ideas
+
+1) eliminate test points J1
+2) add 'by Barry Hills' to the silkscreen on the discription and rev
+3) align C3 under D1 away from interference with J1
+4) nudge R3, R4, U1, U2 up towards J1 to make room for a larger OLED
+5) C1 collides with larger OLED.  Suggest moving R1 and R2 so U1 and U2 can be distributed horizontally making room for C1 & C2 at the notch end of the TTL
+6) The larger OLED is 1.5in tall and 1.75in wide.  position it starting from the same lower left corner being used as in rev Barry
+7) move the triangular button cluster to the right such that the left edge of the up/down buttons is 0.15in away from right edge of OLED.  Also move the cluster towards bottom by 0.3in
+8) implement the cut/jump for the R5 power to use pin 21.
+9) make R5 silkscreen R=180
+10) change the D2 pads to be square making surface mount easier.  keep the through hole on the square pad to through hole is still possible
+11) change silkscreen on D2 from PWR to ACTIVITY
+12) move D2 to line up under pin 21 of U3
+13) move R5 to the left D2
+14) move SW4 so it is below pin 20 of U3
+15) if routing becomes weird it is ok to reverse SW4 and D2 as described above
+
+If sensible, it would be nice to agree on the placement drawing before re-routing and generating gerbers
+
+
+ 

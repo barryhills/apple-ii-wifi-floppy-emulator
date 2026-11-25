@@ -1,0 +1,8 @@
+SW status in DEV (2026-11-25)
+
+No changes from PROD. Board rev C uses the PROD firmware, v0.15.4
+(rev C moves the activity LED to GP16 / Pico pin 21, which the firmware has
+driven since v0.13.3 for the rev B bodge).
+
+When software work starts, it happens here (DEV/SW/firmware, DEV/SW/tools);
+update this file to say what is in progress.

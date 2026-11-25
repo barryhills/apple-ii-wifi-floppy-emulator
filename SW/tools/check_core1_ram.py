@@ -11,14 +11,14 @@ followed; an indirect call (blx/bx through a register other than lr) fails
 the check, since its target is unknown; every literal-pool word in a reached
 function that holds a flash address (0x1000_0000-0x11ff_ffff) is reported.
 
-usage: tools/check_core1_ram.py [firmware/build/a2drive.elf [start-function]]
+usage: SW/tools/check_core1_ram.py [SW/firmware/build/a2drive.elf [start-function]]
 (start-function other than core1_main: only to check the checker)
 """
 import re
 import subprocess
 import sys
 
-elf = sys.argv[1] if len(sys.argv) > 1 else "firmware/build/a2drive.elf"
+elf = sys.argv[1] if len(sys.argv) > 1 else "SW/firmware/build/a2drive.elf"
 dis = subprocess.run(["arm-none-eabi-objdump", "-d", "--no-show-raw-insn", elf],
                      capture_output=True, text=True, check=True).stdout
 

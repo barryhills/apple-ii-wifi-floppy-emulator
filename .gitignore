@@ -3,8 +3,8 @@ build-bench/
 *.uf2
 *.elf
 .DS_Store
-hardware/source/pcb/out*/
 __pycache__/
-firmware/config.json
-docs/reference/
-hardware/rev-c/out/
+HW/REVB/source/pcb/out*/
+HW/REVC/out/
+SW/firmware/config.json
+DOCS/reference/

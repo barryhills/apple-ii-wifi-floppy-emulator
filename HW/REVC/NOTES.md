@@ -1,13 +1,13 @@
 # Board rev C: working notes
 
-Branch `pcb-rev-c`. Placement agreed with Barry 2026-11-20 (`placement-revC.png`,
+Branch `dev` (folder `DEV/HW/REVC`). Placement agreed with Barry 2026-11-20 (`placement-revC.png`,
 `placement_c.py`); trial route `trial-route-revC.png`.
 
 ## Build
 
-    cd hardware/rev-c/source/pcb
+    cd HW/REVC/source/pcb
     NEAR_COST=$(cat near_cost.txt) ORDER=$(cat order_c.txt) python3 board_c.py ../../out
-    python3 drc_c.py ../../out ../../../source/schematic_rev0.4.py   # rev 0.3 until 0.4 exists
+    python3 drc_c.py ../../out ../schematic_rev0.4.py
     python3 hand_check.py ../../out/model.json                        # track-to-pad gaps < 0.5 mm
     python3 ../../trial_view.py ../../out/model.json ../../trial-route-revC.png
     python3 gerb_c.py ../../out                 # Gerbers + drill + zip (out/apple2-wifi-floppy-revC-*)
