@@ -1,7 +1,7 @@
 // WiFi station management: connect, watch the link, reconnect with backoff.
 // Also brings up mDNS (<hostname>.local, _http._tcp), SNTP and the HTTP API.
 //
-// Setup mode (CLAUDE.md, "Network setup"): instead of joining a network the
+// Setup mode (DESIGN.md, "Network setup"): instead of joining a network the
 // drive is an open access point SETUP_SSID at 192.168.4.1 (the cyw43
 // driver's default AP address) with a DHCP server, serving the same page so
 // the user can enter WiFi settings. Entered at boot (main.c decides): UP+DOWN

@@ -16,6 +16,6 @@ floppies.
   (latest release; how to load it: [user guide](DOCS/user-guide.md), section 2).
   Source: C, Raspberry Pi Pico SDK (`SW/firmware/`). Build:
   `cmake -S SW/firmware -B SW/firmware/build -G Ninja && ninja -C SW/firmware/build`.
-- **Design record:** `CLAUDE.md`: decisions, sources, test history.
+- **Design record:** `DESIGN.md`: decisions, sources, test history.
 - **Licence:** MIT (`LICENSE`); borrowed code and its licences:
   `THIRD-PARTY-NOTICES.md`.

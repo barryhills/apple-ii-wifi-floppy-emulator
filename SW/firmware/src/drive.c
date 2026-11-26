@@ -266,7 +266,7 @@ static void __not_in_flash_func(core1_main)(void)
         }
 
         // Inputs, all at once. The stepper is powered only while the drive
-        // is enabled (CLAUDE.md, Apple dwg 050-0007-01), so phases are
+        // is enabled (DESIGN.md, Apple dwg 050-0007-01), so phases are
         // ignored otherwise: with two drives on one card, the other drive's
         // seeks must not move this head. Phase states shorter than
         // STEPPER_SETTLE_US are ignored too (stepper.h).

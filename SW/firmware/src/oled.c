@@ -32,7 +32,7 @@
 // of the carousel's filled rows with the cursor (inverse video) on the mounted
 // image; '*' marks the mounted image. UP = next image, DOWN = previous (held: repeat), SELECT
 // mounts the image under the cursor. The drive's buttons change the mounted
-// image only (division of control, CLAUDE.md). Idle PICK_IDLE_MS -> home.
+// image only (division of control, DESIGN.md). Idle PICK_IDLE_MS -> home.
 
 #include <stdio.h>
 #include <string.h>

@@ -1,8 +1,8 @@
-# WiFi Disk II drive emulator — project memory
+# WiFi Disk II drive emulator — design record
 
 Design record for the code and boards in this repository. Keep it current: when
 a decision is made or an open item closes, edit this file in the same session.
-Working agreements and the PROD/DEV folder layout are in the `CLAUDE.md` one
+Working agreements and the PROD/DEV folder layout are in `CLAUDE.md` one
 level above the repo (`~/Claude/wifi-disk-ii/CLAUDE.md`, not in git).
 
 ## What this is

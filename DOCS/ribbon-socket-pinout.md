@@ -3,7 +3,7 @@
 Female IDC socket on the ribbon from the Disk II controller card. Viewed
 **looking into the holes** (as when pushing in jumper pins), **key tab on
 top, red stripe on the left**. Signal names from Apple dwg 050-0007-01 and
-schematic rev 0.3 (see CLAUDE.md, J1 table).
+schematic rev 0.3 (see DESIGN.md, J1 table).
 
 ```
                  ┌──── tab ────┐
