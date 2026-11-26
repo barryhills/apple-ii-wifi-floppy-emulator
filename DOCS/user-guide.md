@@ -5,6 +5,11 @@ controller card and behaves as a 5.25" drive, drive 1 or drive 2. You load
 disk images onto it over WiFi from a computer or phone, and the Apple
 reads and writes them like floppies. Nothing changes on the Apple side.
 
+This guide covers both boards, **rev B** and **rev C**. They run the same
+firmware (`a2drive.uf2`) and work the same way; the only difference you
+will notice is the activity LED: built in on rev C, an optional change on
+rev B (section 6).
+
 ## 1. Before you plug it into the Apple
 
 The controller card's drive header is **not keyed**. A reversed ribbon
@@ -101,7 +106,8 @@ second after the writing stops.
 | Slow blink, once a second | On WiFi, working |
 | Stops blinking (stuck on or off) | The firmware stopped. The drive restarts itself within about 4 s |
 
-**Activity LED** (D2, only with the optional change below):
+**Activity LED** (D2, marked ACT on rev C; on rev B only with the optional
+change in section 6):
 
 | LED | Meaning |
 |---|---|
@@ -114,9 +120,12 @@ stays intact.
 
 ## 6. Optional: activity LED (rev B board)
 
-As designed, D2 is a power LED wired to 3.3 V through R5. One cut and one
-wire make it the activity LED. The firmware already drives it. Without
-the change, nothing is connected to that output and no harm is done.
+Rev C needs nothing here: its D2 (ACT) is the activity LED as built.
+
+On rev B, D2 is a power LED wired to 3.3 V through R5 (marked PWR). One
+cut and one wire make it the activity LED. This is optional, and the
+firmware is the same either way: it always drives Pico pin 21, which on an
+unmodified rev B is connected to nothing, so no harm is done.
 
 1. Fit **D2** and **R5**. A **blue LED with R5 = 180 Ω** gives a bright
    flash. For a red, yellow or green LED use about 330 to 470 Ω.

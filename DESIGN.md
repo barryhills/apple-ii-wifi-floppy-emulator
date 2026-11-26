@@ -22,7 +22,7 @@ in the design assumes either booting from the vdisk or not booting from it.
 Dev loop the project exists for: build on the Mac → `curl` push image →
 `BRUN PROG` from the vdisk (D1 or D2) on the //e. No reboot.
 
-## Status (as of 2026-11-19)
+## Status (as of 2026-11-26)
 
 All work through v0.15 is on `main` (fast-forwarded 2026-11-19); the
 milestone branches named below (m1-...m6, gui-carousel, m3d/m3e) were
@@ -30,6 +30,15 @@ deleted after merging. Their commits remain in `main`; tags v0.5-list,
 v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
 
 
+- **Rev C built and passed 2026-11-26 (Barry: "rev c boards work
+  flawlessly with the already released software", v0.15.4).** Promoted to
+  PROD and pushed to GitHub the same day (tag `prod-REVC-fw0.15.4`).
+  **One firmware for both boards** (Barry): rev B and rev C differ only in
+  D2/R5 (rev C: activity LED from GP16 as built; rev B: power LED, the
+  cut-and-wire to GP16 is optional, `HW/REVB/README.md` and user guide
+  section 6). No board-revision setting or detection in firmware; keep it
+  that way unless a future board really differs. Photos of both built
+  boards: `HW/REVB/photo-revB.jpg`, `HW/REVC/photo-revC.jpg`.
 - **Board rev C ordered** from JLCPCB (2026-11-20; Barry). Everything is in
   `HW/REVC/` (see its NOTES.md): agreed placement, schematic rev 0.4
   (only change: R5 from Pico pin 21 / GP16, 180 ohm), generator/router/DRC,
@@ -417,7 +426,7 @@ v0.7-settings, v0.7.1, v0.13.1-boot, v0.13.2-dirring mark known-good points.
 - `picotool erase` without `--range` fails: it can't determine the flash size
   (OTP flash devinfo reads 0x0c00).
 
-## Hardware summary (schematic rev 0.3, board rev B)
+## Hardware summary (schematic rev 0.3, board rev B; rev C differences in HW/REVC/NOTES.md)
 
 Source of truth: `HW/REVB/wifi-disk-ii-schematic-r0.3.svg`. The board was generated
 by the custom Python in `HW/REVB/source/` (KiCad was unavailable), with its own

@@ -1,6 +1,12 @@
 # Board rev C: working notes
 
-Branch `dev` (folder `DEV/HW/REVC`). Placement agreed with Barry 2026-11-20 (`placement-revC.png`,
+**Status:** ordered 2026-11-20; boards stuffed and tested by Barry
+2026-11-26: work flawlessly with the released firmware v0.15.4 (no
+firmware change for rev C). Promoted to PROD / GitHub 2026-11-26.
+
+![Rev C, built](photo-revC.jpg)
+
+Placement agreed with Barry 2026-11-20 (`placement-revC.png`,
 `placement_c.py`); trial route `trial-route-revC.png`.
 
 ## Build
@@ -63,5 +69,6 @@ R5 top to Pico pin 21 (LED_ACT); R5 180; D2 note "activity"; J3 label covers the
 - (Done 2026-11-20: Barry's 1:1 fit check passed. Order files in `fab/`:
   `apple2-wifi-floppy-revC-gerbers.zip`, sha256 93705eb73d22b168..., identical
   to a fresh build from the committed source; plus the fit-check PDF.)
-- Gerbers in a third-party viewer (new square-pad code), or JLCPCB's preview.
+- (Closed 2026-11-26: boards built from these Gerbers work, so the
+  square-pad code is fine.)
 - A low pan-head or nylon screw at the bottom-left hole (under the OLED corner).
