@@ -16,8 +16,9 @@ rev B (section 6).
 either end.** The connector carries +5 V and ±12 V, and an unkeyed IDC
 plug can touch the wrong pins on the way in.
 
-The controller card's drive header is **not keyed**. A reversed ribbon
-puts ±12 V on the board's logic and destroys the buffer chips.
+The controller card's drive header is **not keyed**. **Pin 1 of the
+ribbon cable must be aligned with pin 1 of the header, or permanent
+damage to the board may occur.**
 
 With the Apple **off** and the ribbon connected **only to the card**,
 check the free end of the ribbon with a meter. **Pin 1 must be ground**,
