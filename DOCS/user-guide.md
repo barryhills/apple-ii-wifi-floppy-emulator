@@ -12,6 +12,10 @@ rev B (section 6).
 
 ## 1. Before you plug it into the Apple
 
+**Turn the Apple off before connecting or disconnecting the ribbon, at
+either end.** The connector carries +5 V and ±12 V, and an unkeyed IDC
+plug can touch the wrong pins on the way in.
+
 The controller card's drive header is **not keyed**. A reversed ribbon
 puts ±12 V on the board's logic and destroys the buffer chips.
 

@@ -30,6 +30,9 @@ connected to it there, so no harm is done.
 
 ## Files
 
+**Turn the Apple off before connecting or disconnecting the ribbon**, and
+read section 1 of the user guide before the first connection.
+
 - **Using it:** [DOCS/user-guide.md](DOCS/user-guide.md): firmware loading,
   WiFi setup, the web page and buttons, the lights, the optional rev B
   activity LED change.
